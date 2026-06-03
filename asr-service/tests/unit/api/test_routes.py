@@ -207,3 +207,41 @@ def test_auth_disabled_when_no_key(make_client, monkeypatch):
     client = make_client(task_manager=tm)
     resp = client.get("/v1/tasks")
     assert resp.status_code == 200
+
+
+# ─── T02: /v2 同名路径复用 v1 控制器（契约一致性）───
+
+def test_v2_submit_alias(make_client):
+    tm = MagicMock()
+    tm.submit.return_value = "tid-v2"
+    client = make_client(task_manager=tm)
+    resp = client.post("/v2/asr", files={"file": ("a.wav", b"abc", "audio/wav")})
+    assert resp.status_code == 200
+    assert resp.json() == {"task_id": "tid-v2"}
+
+
+def test_v2_list_tasks_alias(make_client):
+    tm = MagicMock()
+    tm.list_tasks.return_value = []
+    client = make_client(task_manager=tm)
+    assert client.get("/v2/tasks").status_code == 200
+
+
+def test_v2_task_detail_and_cancel_alias(make_client):
+    tm = MagicMock()
+    tm.get_task.return_value = {"task_id": "t1", "status": "completed", "progress": 1.0,
+                               "result": None, "error": None}
+    tm.cancel_task.return_value = "pending"
+    client = make_client(task_manager=tm)
+    assert client.get("/v2/tasks/t1").status_code == 200
+    assert client.delete("/v2/tasks/t1").status_code == 200
+
+
+def test_v2_has_no_deprecated_asr_task_route(make_client):
+    # deprecated GET /asr/{id} 仅 v1 保留，v2 不注册 -> 404
+    tm = MagicMock()
+    client = make_client(task_manager=tm)
+    assert client.get("/v2/asr/t1").status_code == 404
+    # v1 仍保留 deprecated 别名
+    tm.get_task.return_value = None
+    assert client.get("/v1/asr/t1").status_code == 200

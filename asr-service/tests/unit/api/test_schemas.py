@@ -1,7 +1,7 @@
 """app/api/schemas.py pydantic 模型测试（字段/默认值/校验）。
 
-注意：这是对当前稳定结构的基线。T01 将为 HealthResponse 新增 mode/capabilities
-（只增字段、向后兼容），届时更新本文件。
+HealthResponse 已在 T01 改为 mode-aware（仅增字段/放宽可选，向后兼容）；
+新增 StreamCapabilities / CapabilitiesResponse。字段定义依 implementation-plan §5.2。
 """
 import pytest
 from pydantic import ValidationError
@@ -70,5 +70,72 @@ def test_health_response_full():
 
 
 def test_health_response_missing_required_raises():
+    # status 有值但缺 device（device 仍为必填，无默认）
     with pytest.raises(ValidationError):
-        schemas.HealthResponse(status="ready")  # 缺多个必填字段
+        schemas.HealthResponse(status="ready")
+
+
+# ─── T01: mode-aware HealthResponse + Capabilities ───
+
+def test_stream_capabilities_defaults():
+    sc = schemas.StreamCapabilities()
+    assert sc.enabled is False
+    assert sc.backend is None
+    assert sc.path is None
+    assert sc.partial_results is False
+    assert sc.word_timestamps is False
+
+
+def test_capabilities_response():
+    cap = schemas.CapabilitiesResponse(
+        mode="standard",
+        offline_api=True,
+        stream=schemas.StreamCapabilities(enabled=True, backend="vad-offline", path="/v2/asr/stream"),
+    )
+    assert cap.mode == "standard"
+    assert cap.offline_api is True
+    assert cap.stream.backend == "vad-offline"
+
+
+def test_health_response_new_field_defaults():
+    # 仅给原必填字段，mode/capabilities 走默认
+    r = schemas.HealthResponse(status="ready", device="cpu")
+    assert r.mode == "standard"
+    assert r.capabilities is None
+    # 放宽为可选的字段默认值
+    assert r.model_size is None
+    assert r.align_enabled is False
+    assert r.asr_backend is None
+
+
+def test_health_response_backward_compatible_dump():
+    # 旧的 8 字段输入仍可构造，且原字段值原样保留，新增字段以默认值出现
+    legacy = {
+        "status": "ready",
+        "device": "cpu",
+        "model_size": "0.6b",
+        "align_enabled": False,
+        "punc_enabled": True,
+        "asr_backend": "qwen_asr",
+        "vad_backend": "pytorch",
+        "punc_backend": "pytorch",
+    }
+    dumped = schemas.HealthResponse(**legacy).model_dump()
+    for k, v in legacy.items():
+        assert dumped[k] == v          # 原字段值不变
+    assert dumped["mode"] == "standard"
+    assert dumped["capabilities"] is None
+
+
+def test_health_response_with_capabilities():
+    r = schemas.HealthResponse(
+        status="ready",
+        mode="standard",
+        device="cpu",
+        capabilities=schemas.CapabilitiesResponse(
+            mode="standard",
+            offline_api=True,
+            stream=schemas.StreamCapabilities(enabled=True, backend="vad-offline", path="/v2/asr/stream"),
+        ),
+    )
+    assert r.capabilities.stream.path == "/v2/asr/stream"

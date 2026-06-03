@@ -60,21 +60,28 @@ def tm_factory():
 
 @pytest.fixture
 def make_client(tmp_path, monkeypatch):
-    """构建注入了依赖的 FastAPI TestClient。
+    """构建注入了依赖的 FastAPI TestClient，按 main.py 的方式装配 v1/v2 工厂路由。
 
-    通过 init_routes 注入 fake task_manager 与 service_info（不启动真实服务/模型）。
-    上传目录重定向到临时目录，避免污染真实缓存路径。
+    - 离线路由：init_routes(task_manager) + build_offline_router("/v1", deprecated)/("/v2")
+    - 共性路由：init_common(service_info) + build_common_router("/v1")/("/v2")
+    不启动真实服务/模型；上传目录重定向到临时目录，避免污染真实缓存路径。
     """
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from app.api import routes
+    from app.api import routes, common_routes
 
     monkeypatch.setattr(routes, "UPLOADS_DIR", str(tmp_path / "uploads"))
 
-    def _make(task_manager=None, service_info=None):
-        routes.init_routes(task_manager, service_info)
+    def _make(task_manager=None, service_info=None, include_offline=True, include_common=True):
         app = FastAPI()
-        app.include_router(routes.router)
+        if include_common:
+            common_routes.init_common(service_info)
+            app.include_router(common_routes.build_common_router("/v1"))
+            app.include_router(common_routes.build_common_router("/v2"))
+        if include_offline:
+            routes.init_routes(task_manager)
+            app.include_router(routes.build_offline_router("/v1", include_deprecated=True))
+            app.include_router(routes.build_offline_router("/v2"))
         return TestClient(app)
 
     return _make
