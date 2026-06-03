@@ -11,7 +11,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 
 /* 页面头部 */
 .page-header { margin-bottom: 20px; }
-.page-header h1 { text-align: center; margin-bottom: 16px; color: #1a1a2e; font-size: 1.6em; }
+.page-header h1 { text-align: center; margin-bottom: 12px; color: #1a1a2e; font-size: 1.6em; }
+.topnav { display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; }
+.topnav a { text-decoration: none; padding: 8px 20px; border-radius: 8px; background: #fff; color: #475569; font-size: 0.9em; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.topnav a.active { background: #6366f1; color: #fff; }
+.topnav a:hover { background: #eef2ff; color: #4f46e5; }
+.topnav a.active:hover { background: #4f46e5; color: #fff; }
 .api-key-bar {
   background: #fff; border-radius: 10px; padding: 12px 16px;
   display: flex; align-items: center; gap: 10px;
@@ -192,6 +197,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
   <!-- 页面头部 -->
   <div class="page-header">
     <h1>Qwen3-ASR Service</h1>
+    <div class="topnav">
+      <a href="/web-ui" class="active">📄 离线转写</a>
+      <a href="/web-ui/stream">🎙 实时转写</a>
+    </div>
     <div class="api-key-bar">
       <label for="apiKeyInput">API Key</label>
       <input type="password" id="apiKeyInput" placeholder="留空表示无需认证">
@@ -254,26 +263,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
             <div class="json-content" id="jsonContent"></div>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 实时转写 -->
-  <div class="bottom-section">
-    <div class="card">
-      <div class="card-title">🎙 实时转写
-        <span class="card-title-right" id="rtInfo">WS /v2/asr/stream</span>
-      </div>
-      <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
-        <button class="submit-btn" id="rtStartBtn" style="display:inline-block;width:auto;padding:8px 18px;">🎤 开始录音</button>
-        <button class="cancel-btn" id="rtStopBtn" style="display:none;margin-top:0;">停止</button>
-        <span id="rtStatus" style="font-size:0.85em;color:#64748b;">未连接</span>
-      </div>
-      <div class="error-box" id="rtError"></div>
-      <div class="result-section" style="max-height:320px;">
-        <h3>转写结果</h3>
-        <div id="rtTranscript" style="line-height:1.7;font-size:0.92em;"></div>
-        <div id="rtPartial" style="color:#94a3b8;font-style:italic;margin-top:6px;"></div>
       </div>
     </div>
   </div>
@@ -578,107 +567,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     }
   }
 
-  // === 实时转写（WS /v2/asr/stream）===
-  const rtStartBtn = $('rtStartBtn'), rtStopBtn = $('rtStopBtn'), rtStatus = $('rtStatus');
-  const rtError = $('rtError'), rtTranscript = $('rtTranscript'), rtPartial = $('rtPartial'), rtInfo = $('rtInfo');
-  const RT_TARGET_SR = 16000;
-  let rtWs = null, rtAudioCtx = null, rtProcessor = null, rtStream = null, rtSource = null;
-
-  function rtSetStatus(s) { rtStatus.textContent = s; }
-  function rtShowError(m) { rtError.textContent = m; rtError.style.display = 'block'; }
-  function rtClearError() { rtError.style.display = 'none'; }
-
-  // 线性重采样到 16k 并转 Int16 LE（简单可用方案）
-  function floatTo16kPCM(input, inputSr) {
-    const ratio = inputSr / RT_TARGET_SR;
-    const outLen = Math.floor(input.length / ratio);
-    const out = new Int16Array(outLen);
-    for (let i = 0; i < outLen; i++) {
-      const idx = i * ratio, i0 = Math.floor(idx), frac = idx - i0;
-      const s = (input[i0] || 0) * (1 - frac) + (input[i0 + 1] || 0) * frac;
-      const v = Math.max(-1, Math.min(1, s));
-      out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
-    }
-    return out;
-  }
-
-  function rtCleanupAudio() {
-    try { if (rtProcessor) { rtProcessor.disconnect(); rtProcessor.onaudioprocess = null; rtProcessor = null; } } catch (e) {}
-    try { if (rtSource) { rtSource.disconnect(); rtSource = null; } } catch (e) {}
-    try { if (rtAudioCtx) { rtAudioCtx.close(); rtAudioCtx = null; } } catch (e) {}
-    try { if (rtStream) { rtStream.getTracks().forEach(t => t.stop()); rtStream = null; } } catch (e) {}
-  }
-
-  rtStartBtn.addEventListener('click', async () => {
-    rtClearError();
-    try {
-      rtStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (e) {
-      rtShowError('麦克风访问失败: ' + e.message);
-      return;
-    }
-    const key = apiKeyInput.value.trim();
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = proto + '://' + location.host + '/v2/asr/stream' + (key ? ('?token=' + encodeURIComponent(key)) : '');
-    rtTranscript.innerHTML = ''; rtPartial.textContent = '';
-    rtWs = new WebSocket(url);
-    rtWs.binaryType = 'arraybuffer';
-
-    rtWs.onopen = () => {
-      rtSetStatus('🔴 录音中...');
-      rtWs.send(JSON.stringify({ type: 'start', audio_fs: RT_TARGET_SR, wav_name: 'web-mic' }));
-      rtAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      rtSource = rtAudioCtx.createMediaStreamSource(rtStream);
-      rtProcessor = rtAudioCtx.createScriptProcessor(4096, 1, 1);
-      rtSource.connect(rtProcessor);
-      rtProcessor.connect(rtAudioCtx.destination);
-      rtProcessor.onaudioprocess = (ev) => {
-        if (!rtWs || rtWs.readyState !== WebSocket.OPEN) return;
-        const pcm = floatTo16kPCM(ev.inputBuffer.getChannelData(0), rtAudioCtx.sampleRate);
-        rtWs.send(pcm.buffer);
-      };
-      rtStartBtn.style.display = 'none';
-      rtStopBtn.style.display = 'inline-block';
-    };
-
-    rtWs.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch (e) { return; }
-      if (msg.type === 'session.created') {
-        rtInfo.textContent = '协议 ' + msg.protocol + ' v' + msg.protocol_version + ' · 后端 ' + msg.backend;
-      } else if (msg.type === 'partial') {
-        rtPartial.textContent = msg.text || '';
-      } else if (msg.type === 'final') {
-        const line = document.createElement('div');
-        const t = (msg.start != null) ? ('[' + fmtTime(msg.start / 1000) + '] ') : '';
-        line.textContent = t + (msg.text || '');
-        rtTranscript.appendChild(line);
-        rtPartial.textContent = '';
-      } else if (msg.type === 'error') {
-        rtShowError('[' + msg.code + '] ' + msg.message);
-      } else if (msg.type === 'session.closed') {
-        rtSetStatus('会话结束');
-      }
-    };
-
-    rtWs.onerror = () => rtShowError('WebSocket 连接错误');
-    rtWs.onclose = (ev) => {
-      rtSetStatus('已断开' + (ev.code ? (' (' + ev.code + ')') : ''));
-      rtCleanupAudio();
-      rtStartBtn.style.display = 'inline-block';
-      rtStopBtn.style.display = 'none';
-    };
-  });
-
-  rtStopBtn.addEventListener('click', () => {
-    if (rtWs && rtWs.readyState === WebSocket.OPEN) {
-      rtWs.send(JSON.stringify({ type: 'stop' }));
-    }
-    rtCleanupAudio();
-    rtSetStatus('已停止，等待末段结果...');
-    rtStopBtn.style.display = 'none';
-    rtStartBtn.style.display = 'inline-block';
-  });
 })();
 </script>
 </body>

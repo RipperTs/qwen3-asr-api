@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实时语音转写测试 · Qwen3-ASR</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #333; min-height: 100vh; }
+.container { max-width: 980px; margin: 0 auto; padding: 24px 16px; }
+.page-header h1 { text-align: center; margin-bottom: 12px; color: #1a1a2e; font-size: 1.5em; }
+.topnav { display: flex; justify-content: center; gap: 8px; margin-bottom: 18px; }
+.topnav a { text-decoration: none; padding: 8px 20px; border-radius: 8px; background: #fff; color: #475569; font-size: 0.9em; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.topnav a.active { background: #6366f1; color: #fff; }
+.topnav a:hover { background: #eef2ff; color: #4f46e5; }
+.topnav a.active:hover { background: #4f46e5; color: #fff; }
+.card { background: #fff; border-radius: 12px; padding: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 16px; }
+.card-title { font-size: 1em; font-weight: 600; color: #374151; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+label { font-size: 0.88em; color: #475569; white-space: nowrap; }
+input[type=text], input[type=password] { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 10px; font-size: 0.9em; outline: none; }
+.grow { flex: 1; min-width: 120px; }
+.btn { padding: 8px 18px; border: none; border-radius: 8px; background: #6366f1; color: #fff; font-size: 0.9em; font-weight: 600; cursor: pointer; }
+.btn:hover { background: #4f46e5; }
+.btn:disabled { background: #a5b4fc; cursor: not-allowed; }
+.btn-danger { background: #ef4444; }
+.btn-danger:hover { background: #dc2626; }
+.btn-ghost { background: #f1f5f9; color: #475569; }
+.btn-ghost:hover { background: #e2e8f0; }
+.tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.tab { flex: 1; text-align: center; padding: 8px; border-radius: 8px; background: #f1f5f9; color: #475569; cursor: pointer; font-size: 0.9em; font-weight: 600; }
+.tab.active { background: #6366f1; color: #fff; }
+.panel { display: none; }
+.panel.active { display: block; }
+.status { font-size: 0.85em; color: #64748b; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #cbd5e1; margin-right: 5px; vertical-align: middle; }
+.dot.on { background: #10b981; }
+.dot.rec { background: #ef4444; }
+.banner { display: none; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 8px; padding: 10px 14px; font-size: 0.86em; margin-bottom: 16px; }
+.hint { display: none; background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; border-radius: 8px; padding: 10px 14px; font-size: 0.86em; margin-top: 10px; }
+.progress-bg { background: #e2e8f0; border-radius: 6px; height: 10px; overflow: hidden; margin-top: 10px; display: none; }
+.progress-bar { background: linear-gradient(90deg, #6366f1, #818cf8); height: 100%; width: 0%; transition: width .15s; }
+.cap { font-size: 0.82em; color: #475569; background: #f8fafc; border-radius: 8px; padding: 10px; margin-top: 10px; display: none; }
+.cap code { color: #6366f1; }
+#transcript { line-height: 1.7; font-size: 0.95em; min-height: 40px; }
+#transcript .line { padding: 3px 0; border-bottom: 1px dashed #eef2f7; }
+#transcript .t { color: #6366f1; font-family: monospace; font-size: 0.85em; margin-right: 6px; }
+#partial { color: #94a3b8; font-style: italic; margin-top: 6px; min-height: 20px; }
+.log-toggle { font-size: 0.82em; color: #6366f1; cursor: pointer; background: none; border: none; }
+#log { display: none; margin-top: 10px; background: #1e293b; color: #e2e8f0; border-radius: 8px; padding: 10px; font-family: monospace; font-size: 0.78em; white-space: pre-wrap; word-break: break-all; max-height: 300px; overflow-y: auto; }
+#log .send { color: #93c5fd; }
+#log .recv { color: #86efac; }
+#log .evt { color: #fbbf24; }
+.muted { color: #94a3b8; font-size: 0.8em; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="page-header">
+    <h1>Qwen3-ASR Service</h1>
+    <div class="topnav">
+      <a href="/web-ui">📄 离线转写</a>
+      <a href="/web-ui/stream" class="active">🎙 实时转写</a>
+    </div>
+  </div>
+
+  <div class="banner" id="banner"></div>
+
+  <!-- 连接配置 -->
+  <div class="card">
+    <div class="card-title">⚙️ 连接</div>
+    <div class="row">
+      <label for="token">API Key</label>
+      <input type="password" id="token" class="grow" placeholder="留空表示无需认证（作为 WS token）">
+      <label for="lang">语言</label>
+      <input type="text" id="lang" style="width:90px;" placeholder="auto">
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <span class="status"><span class="dot" id="dot"></span><span id="status">未连接</span></span>
+    </div>
+    <div class="cap" id="cap"></div>
+  </div>
+
+  <!-- 输入源 -->
+  <div class="card">
+    <div class="tabs">
+      <div class="tab active" data-src="mic">🎤 麦克风</div>
+      <div class="tab" data-src="file">📁 文件模拟</div>
+    </div>
+
+    <!-- 麦克风 -->
+    <div class="panel active" id="panel-mic">
+      <div class="row">
+        <button class="btn" id="micStart">开始录音</button>
+        <button class="btn btn-danger" id="micStop" style="display:none;">停止</button>
+        <span class="muted">点击后授权麦克风，边说边转写。</span>
+      </div>
+    </div>
+
+    <!-- 文件模拟 -->
+    <div class="panel" id="panel-file">
+      <div class="row">
+        <input type="file" id="fileInput" accept="audio/*">
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn" id="fileStart">开始模拟推流</button>
+        <button class="btn btn-danger" id="fileStop" style="display:none;">停止</button>
+        <label><input type="checkbox" id="noThrottle"> ⚡ 不限速（尽快推送）</label>
+      </div>
+      <div class="muted" style="margin-top:8px;">点击后按需加载 ffmpeg-wasm 解码（首次约 25–30MB，仅本次会话加载一次；加载失败自动回退浏览器原生解码）→ 转 16k 单声道→按 200ms 分帧推流，模拟实时输入。</div>
+      <div class="progress-bg" id="fileProgressBg"><div class="progress-bar" id="fileProgress"></div></div>
+    </div>
+
+    <div class="hint" id="hint"></div>
+  </div>
+
+  <!-- 结果 -->
+  <div class="card">
+    <div class="card-title">📝 转写结果</div>
+    <div id="transcript"></div>
+    <div id="partial"></div>
+  </div>
+
+  <!-- 协议日志 -->
+  <div class="card">
+    <div class="card-title">🧾 协议日志 <button class="log-toggle" id="logToggle">展开</button>
+      <button class="log-toggle" id="logClear" style="margin-left:auto;">清空</button>
+    </div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const RT_SR = 16000;
+  const FRAME = 3200;                 // 200ms @16k
+  let ws = null, source = 'mic';
+  let micCtx = null, micProc = null, micSrc = null, micStream = null;
+  let fileAborted = false;
+  const BP_LIMIT = 1 << 20;            // 1MB 发送缓冲上限（背压，防止灌爆内存卡死）
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  function waitDrain() {
+    return new Promise(res => {
+      if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount < BP_LIMIT) return res();
+      const iv = setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount < BP_LIMIT) { clearInterval(iv); res(); }
+      }, 20);
+    });
+  }
+
+  // ── 状态/日志 ──
+  function setStatus(s, cls) {
+    $('status').textContent = s;
+    const dot = $('dot'); dot.className = 'dot' + (cls ? ' ' + cls : '');
+  }
+  function showBanner(m) { $('banner').textContent = m; $('banner').style.display = 'block'; }
+  function hideBanner() { $('banner').style.display = 'none'; }
+  function showHint(m) { $('hint').textContent = m; $('hint').style.display = 'block'; }
+  function clearHint() { $('hint').style.display = 'none'; }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function fmtMs(ms) {
+    if (ms == null) return '--:--.--';
+    const s = ms / 1000, m = Math.floor(s / 60), sec = s - m * 60;
+    return pad2(m) + ':' + sec.toFixed(2).padStart(5, '0');
+  }
+  const MAX_LOG_LINES = 300;
+  function log(kind, data) {
+    const el = $('log');
+    const ts = new Date().toISOString().substr(11, 12);
+    const body = (typeof data === 'string') ? data : JSON.stringify(data);
+    const cls = kind === 'send' ? 'send' : (kind === 'recv' ? 'recv' : 'evt');
+    const arrow = kind === 'send' ? '→ ' : (kind === 'recv' ? '← ' : '• ');
+    const span = document.createElement('span');        // 用文本节点 + 封顶，避免 innerHTML O(n²)
+    span.className = cls;
+    span.textContent = ts + ' ' + arrow + body + '\n';
+    el.appendChild(span);
+    while (el.childNodes.length > MAX_LOG_LINES) el.removeChild(el.firstChild);
+    el.scrollTop = el.scrollHeight;
+  }
+  function escapeHtml(s) { const d = document.createElement('div'); d.appendChild(document.createTextNode(s || '')); return d.innerHTML; }
+
+  // ── 结果渲染 ──
+  function clearResults() { $('transcript').innerHTML = ''; $('partial').textContent = ''; }
+  function appendFinal(m) {
+    const line = document.createElement('div');
+    line.className = 'line';
+    const t = (m.start != null) ? ('<span class="t">[' + fmtMs(m.start) + ']</span>') : '';
+    const w = (m.words && m.words.length) ? ' <span class="muted">(' + m.words.length + ' 词)</span>' : '';
+    line.innerHTML = t + escapeHtml(m.text || '') + w;
+    $('transcript').appendChild(line);
+  }
+  function showCap(m) {
+    $('cap').style.display = 'block';
+    $('cap').innerHTML = '协议 <code>' + escapeHtml(m.protocol) + ' v' + escapeHtml(m.protocol_version) +
+      '</code> · 模式 <code>' + escapeHtml(m.mode) + '</code> · 后端 <code>' + escapeHtml(m.backend) +
+      '</code> · 采样率 ' + m.sample_rate + ' · 能力 ' + escapeHtml(JSON.stringify(m.capabilities));
+  }
+
+  // ── PCM 工具 ──
+  function floatToInt16(f32) {
+    const out = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      const v = Math.max(-1, Math.min(1, f32[i]));
+      out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    }
+    return out;
+  }
+  // 麦克风：任意采样率线性重采样到 16k 并转 Int16
+  function micFloatTo16kPCM(input, inputSr) {
+    if (inputSr === RT_SR) return floatToInt16(input);
+    const ratio = inputSr / RT_SR, outLen = Math.floor(input.length / ratio);
+    const out = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const idx = i * ratio, i0 = Math.floor(idx), frac = idx - i0;
+      const s = (input[i0] || 0) * (1 - frac) + (input[i0 + 1] || 0) * frac;
+      const v = Math.max(-1, Math.min(1, s));
+      out[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    }
+    return out;
+  }
+
+  // ── WebSocket ──
+  function wsSendJson(obj) { if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(obj)); log('send', obj); } }
+  function startMsg() {
+    const lang = $('lang').value.trim();
+    const m = { type: 'start', audio_fs: RT_SR, wav_name: 'web-test' };
+    if (lang && lang !== 'auto') m.language = lang;
+    return m;
+  }
+  function openWs(onReady) {
+    clearHint(); clearResults();
+    const token = $('token').value.trim();
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = proto + '://' + location.host + '/v2/asr/stream' + (token ? ('?token=' + encodeURIComponent(token)) : '');
+    setStatus('连接中...');
+    ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => log('evt', 'WS open');
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      log('recv', m);
+      if (m.type === 'session.created') { showCap(m); setStatus('已连接 · ' + m.backend, 'on'); onReady && onReady(); }
+      else if (m.type === 'partial') { $('partial').textContent = m.text || ''; }
+      else if (m.type === 'final') { appendFinal(m); $('partial').textContent = ''; }
+      else if (m.type === 'error') { showHint('[' + m.code + '] ' + m.message); }
+      else if (m.type === 'session.closed') { setStatus('会话结束'); }
+    };
+    ws.onerror = () => { log('evt', 'WS error'); };
+    ws.onclose = (ev) => {
+      log('evt', 'WS close code=' + ev.code);
+      setStatus('已断开 (' + ev.code + ')');
+      if (ev.code === 1008) showHint('鉴权失败：请检查 API Key。');
+      else if (ev.code === 1013) showHint('并发会话已满（1013）。');
+      else if (ev.code === 1011) showHint('实时端点未就绪：请用 --serve-mode standard --enable-stream 启动服务。');
+      resetButtons();
+      cleanupMic();
+    };
+  }
+  function closeWs() { try { if (ws) ws.close(); } catch (e) {} }
+
+  function resetButtons() {
+    $('micStart').style.display = 'inline-block'; $('micStop').style.display = 'none';
+    $('fileStart').style.display = 'inline-block'; $('fileStop').style.display = 'none';
+  }
+
+  // ── 麦克风模式 ──
+  async function startMic() {
+    clearHint();
+    try { micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { showHint('麦克风访问失败: ' + e.message); return; }
+    openWs(() => {
+      wsSendJson(startMsg());
+      micCtx = new (window.AudioContext || window.webkitAudioContext)();
+      micSrc = micCtx.createMediaStreamSource(micStream);
+      micProc = micCtx.createScriptProcessor(4096, 1, 1);
+      micSrc.connect(micProc); micProc.connect(micCtx.destination);
+      micProc.onaudioprocess = (e) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (ws.bufferedAmount > BP_LIMIT) return;     // 背压：缓冲过高时丢弃实时帧，避免堆积卡死
+        ws.send(micFloatTo16kPCM(e.inputBuffer.getChannelData(0), micCtx.sampleRate).buffer);
+      };
+      setStatus('🔴 录音中...', 'rec');
+    });
+    $('micStart').style.display = 'none'; $('micStop').style.display = 'inline-block';
+  }
+  function stopMic() {
+    wsSendJson({ type: 'stop' });
+    cleanupMic();
+    setStatus('已停止，等待末段结果...');
+    $('micStart').style.display = 'inline-block'; $('micStop').style.display = 'none';
+  }
+  function cleanupMic() {
+    try { if (micProc) { micProc.disconnect(); micProc.onaudioprocess = null; micProc = null; } } catch (e) {}
+    try { if (micSrc) { micSrc.disconnect(); micSrc = null; } } catch (e) {}
+    try { if (micCtx) { micCtx.close(); micCtx = null; } } catch (e) {}
+    try { if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; } } catch (e) {}
+  }
+
+  // ── ffmpeg-wasm 懒加载（点击时按需加载；失败回退原生解码）──
+  // 单线程核心，无需 COOP/COEP；用 UMD 全局，避免无构建环境的 ESM 裸导入问题。
+  const FFMPEG_MIRROR = 'https://unpkg.zhimg.com';
+  let ffmpeg = null, ffmpegTried = false;
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = src; s.async = true;
+      s.onload = res; s.onerror = () => rej(new Error('脚本加载失败: ' + src));
+      document.head.appendChild(s);
+    });
+  }
+  async function getFFmpeg() {
+    if (ffmpeg) return ffmpeg;
+    if (ffmpegTried) return null;     // 已试过且失败，不再重试本次会话
+    ffmpegTried = true;
+    try {
+      setStatus('正在加载转码器 (ffmpeg-wasm)…');
+      if (!window.FFmpegWASM) await loadScript(FFMPEG_MIRROR + '/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
+      if (!window.FFmpegUtil) await loadScript(FFMPEG_MIRROR + '/@ffmpeg/util@0.12.1/dist/umd/index.js');
+      const { FFmpeg } = window.FFmpegWASM;
+      const { toBlobURL } = window.FFmpegUtil;
+      const core = FFMPEG_MIRROR + '/@ffmpeg/core@0.12.10/dist/umd';
+      const ff = new FFmpeg();
+      ff.on('log', ({ message }) => log('evt', 'ffmpeg: ' + message));
+      await ff.load({
+        coreURL: await toBlobURL(core + '/ffmpeg-core.js', 'text/javascript'),
+        wasmURL: await toBlobURL(core + '/ffmpeg-core.wasm', 'application/wasm'),
+      });
+      ffmpeg = ff;
+      log('evt', 'ffmpeg-wasm 已就绪');
+      return ff;
+    } catch (e) {
+      log('evt', 'ffmpeg-wasm 加载失败，回退浏览器原生解码: ' + e.message);
+      return null;
+    }
+  }
+
+  // 文件 → 16k 单声道 PCM16(Int16Array)。优先 ffmpeg-wasm（直出 s16le），失败回退 Web Audio。
+  async function decodeFileTo16kPCM(file) {
+    const ff = await getFFmpeg();
+    if (ff) {
+      const { fetchFile } = window.FFmpegUtil;
+      await ff.writeFile('input', await fetchFile(file));
+      await ff.exec(['-i', 'input', '-ac', '1', '-ar', String(RT_SR), '-f', 's16le', 'out.pcm']);
+      const out = await ff.readFile('out.pcm');     // Uint8Array (s16le LE)
+      try { await ff.deleteFile('input'); await ff.deleteFile('out.pcm'); } catch (e) {}
+      return new Int16Array(out.buffer, out.byteOffset, Math.floor(out.byteLength / 2));
+    }
+    // 回退：浏览器原生解码 + 离线重采样（decoded/off 离开作用域后即可回收）
+    const buf = await file.arrayBuffer();
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await ac.decodeAudioData(buf); ac.close();
+    const dstLen = Math.ceil(decoded.length * RT_SR / decoded.sampleRate);
+    const off = new OfflineAudioContext(1, dstLen, RT_SR);
+    const bs = off.createBufferSource(); bs.buffer = decoded; bs.connect(off.destination); bs.start();
+    const rendered = await off.startRendering();
+    return floatToInt16(rendered.getChannelData(0));
+  }
+
+  // ── 文件模拟模式 ──
+  async function startFile() {
+    clearHint();
+    const file = $('fileInput').files[0];
+    if (!file) { showHint('请先选择音频文件。'); return; }
+    $('fileStart').style.display = 'none'; $('fileStop').style.display = 'inline-block';
+    $('fileProgressBg').style.display = 'block'; $('fileProgress').style.width = '0%';
+    fileAborted = false;
+
+    let pcm16;
+    try {
+      pcm16 = await decodeFileTo16kPCM(file);
+    } catch (e) {
+      showHint('音频解码失败: ' + e.message);
+      $('fileStart').style.display = 'inline-block'; $('fileStop').style.display = 'none';
+      return;
+    }
+    if (fileAborted) { $('fileStart').style.display = 'inline-block'; $('fileStop').style.display = 'none'; return; }
+
+    openWs(async () => {
+      wsSendJson(startMsg());
+      setStatus('📤 推流中...', 'rec');
+      const noThrottle = $('noThrottle').checked;
+      const total = pcm16.length;
+      const frameMs = FRAME / RT_SR * 1000;          // 200ms
+      for (let i = 0; i < total; i += FRAME) {
+        if (fileAborted || !ws || ws.readyState !== WebSocket.OPEN) return;
+        await waitDrain();                            // 背压：发送缓冲过高时等排空，避免卡死
+        ws.send(pcm16.subarray(i, Math.min(i + FRAME, total)));
+        $('fileProgress').style.width = Math.round(Math.min(i + FRAME, total) / total * 100) + '%';
+        if (!noThrottle) await sleep(frameMs);        // 实时节奏；勾不限速则尽快推（仍受背压约束）
+      }
+      if (fileAborted || !ws || ws.readyState !== WebSocket.OPEN) return;
+      $('fileProgress').style.width = '100%';
+      wsSendJson({ type: 'stop' });
+      setStatus('推流完成，等待末段结果...');
+      $('fileStart').style.display = 'inline-block'; $('fileStop').style.display = 'none';
+    });
+  }
+  function stopFile() {
+    fileAborted = true;
+    wsSendJson({ type: 'stop' });
+    setStatus('已停止');
+    $('fileStart').style.display = 'inline-block'; $('fileStop').style.display = 'none';
+  }
+
+  // ── 能力预检 ──
+  async function precheck() {
+    try {
+      const r = await fetch('/v2/capabilities');
+      if (!r.ok) return;
+      const c = await r.json();
+      if (!c.stream || !c.stream.enabled) {
+        showBanner('⚠️ 当前服务未启用实时端点。请用 --serve-mode standard --enable-stream 启动后刷新本页。');
+      } else { hideBanner(); }
+    } catch (e) { /* 服务未起或无 web，忽略 */ }
+  }
+
+  // ── 事件绑定 ──
+  document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    source = tab.dataset.src;
+    $('panel-' + source).classList.add('active');
+  }));
+  $('micStart').addEventListener('click', startMic);
+  $('micStop').addEventListener('click', stopMic);
+  $('fileStart').addEventListener('click', startFile);
+  $('fileStop').addEventListener('click', stopFile);
+  $('logToggle').addEventListener('click', () => {
+    const el = $('log'); const open = el.style.display === 'none' || !el.style.display;
+    el.style.display = open ? 'block' : 'none'; $('logToggle').textContent = open ? '收起' : '展开';
+  });
+  $('logClear').addEventListener('click', () => { $('log').innerHTML = ''; });
+
+  precheck();
+})();
+</script>
+</body>
+</html>
