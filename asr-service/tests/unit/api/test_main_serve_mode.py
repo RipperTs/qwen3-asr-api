@@ -5,6 +5,7 @@ mode 正确、不误挂离线接口。standard 分支需加载真实模型，留
 隔离 setup_logger / cfg 全局副作用。
 """
 import logging
+import threading
 import types
 from unittest.mock import MagicMock
 
@@ -89,7 +90,9 @@ def test_standard_mode_with_stream_mounts_ws(isolated_create_app, monkeypatch):
 
     class FakeVAD:
         BACKEND = "pytorch"
-        def __init__(self, *a, **k): self._model = MagicMock()
+        def __init__(self, *a, **k):
+            self._model = MagicMock()
+            self._infer_lock = threading.Lock()    # 对齐 VADEngine 接口（流式共用推理锁）
         def load(self): pass
 
     class FakeASR:

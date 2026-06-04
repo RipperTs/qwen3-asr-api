@@ -11,73 +11,51 @@ StreamSession 产出类型化信封事件 dict（{"type": "final", ...}）。
 """
 import asyncio
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
 from app.utils.audio_resampler import pcm_bytes_to_array, resample_to_16k
+from app.utils.result_parser import extract_text, extract_words
 from app.engines.streaming_vad_engine import StreamingVADEngine
 
 logger = logging.getLogger(__name__)
 
 _TARGET_SR = 16000
-
-
-# ─── 结果解析（借鉴 asr_pipeline._extract_text/_extract_words，结构一致）───
-
-def _extract_text(results) -> str:
-    if not results:
-        return ""
-    if isinstance(results, str):
-        return results
-    if isinstance(results, list):
-        texts = []
-        for item in results:
-            if hasattr(item, "text"):
-                texts.append(item.text)
-            elif isinstance(item, dict):
-                texts.append(item.get("text", ""))
-            elif isinstance(item, str):
-                texts.append(item)
-        return "".join(texts)
-    if hasattr(results, "text"):
-        return results.text
-    return str(results)
-
-
-def _extract_words(results, offset_sec: float):
-    if not results or not isinstance(results, list):
-        return None
-    words = []
-    for item in results:
-        ts = getattr(item, "time_stamps", None)
-        if ts is None:
-            continue
-        for w in getattr(ts, "items", []):
-            words.append({
-                "text": w.text,
-                "start": round(w.start_time + offset_sec, 3),
-                "end": round(w.end_time + offset_sec, 3),
-            })
-    return words if words else None
+_MIN_AUDIO_FS = 8000          # 客户端 audio_fs 允许下限
+_MAX_AUDIO_FS = 96000         # 客户端 audio_fs 允许上限
+_IDLE_KEEP_MS = 5000          # 无活动语音段时缓冲保留余量（覆盖 VAD 事件回溯）
 
 
 class AudioBuffer:
-    """累积 16kHz float32 单声道样本，按绝对毫秒切片，并可释放已消费部分。"""
+    """累积 16kHz float32 单声道样本，按绝对毫秒切片，并可释放已消费部分。
+
+    分块存储 + 惰性合并：append 仅追加块引用（O(1)），slice/drop 前一次性合并，
+    避免逐帧 np.concatenate 产生 O(n²) 拷贝。
+    """
 
     def __init__(self, sr: int = _TARGET_SR):
         self.sr = sr
-        self._buf = np.zeros(0, dtype=np.float32)
-        self._base_ms = 0     # _buf[0] 对应的绝对时间(ms)
+        self._chunks: list[np.ndarray] = []
+        self._total = 0       # _chunks 内样本总数
+        self._base_ms = 0     # 首样本对应的绝对时间(ms)
 
     def append(self, arr: np.ndarray):
         if arr is not None and arr.size:
-            self._buf = np.concatenate([self._buf, np.asarray(arr, dtype=np.float32)])
+            a = np.asarray(arr, dtype=np.float32)
+            self._chunks.append(a)
+            self._total += a.size
+
+    def _merged(self) -> np.ndarray:
+        if len(self._chunks) > 1:
+            self._chunks = [np.concatenate(self._chunks)]
+        return self._chunks[0] if self._chunks else np.zeros(0, dtype=np.float32)
 
     def _ms_to_idx(self, ms: int) -> int:
         idx = int((ms - self._base_ms) * self.sr / 1000)
-        return max(0, min(idx, len(self._buf)))
+        return max(0, min(idx, self._total))
 
     @property
     def base_ms(self) -> int:
@@ -85,19 +63,21 @@ class AudioBuffer:
 
     @property
     def end_ms(self) -> int:
-        return self._base_ms + int(len(self._buf) * 1000 / self.sr)
+        return self._base_ms + int(self._total * 1000 / self.sr)
 
     def slice_ms(self, start_ms, end_ms) -> np.ndarray:
         if start_ms is None:
             start_ms = self._base_ms
         s = self._ms_to_idx(int(start_ms))
         e = self._ms_to_idx(int(end_ms))
-        return self._buf[s:e]
+        return self._merged()[s:e]
 
     def drop_until_ms(self, ms: int):
         idx = self._ms_to_idx(int(ms))
         if idx > 0:
-            self._buf = self._buf[idx:]
+            buf = self._merged()[idx:]
+            self._chunks = [buf] if buf.size else []
+            self._total = int(buf.size)
             self._base_ms += int(idx * 1000 / self.sr)
 
 
@@ -126,7 +106,15 @@ class StreamSession:
 
     def configure(self, cfg_msg: dict):
         cfg_msg = cfg_msg or {}
-        self.audio_fs = int(cfg_msg.get("audio_fs", _TARGET_SR))
+        raw_fs = cfg_msg.get("audio_fs", _TARGET_SR)
+        try:
+            audio_fs = int(raw_fs)
+        except (TypeError, ValueError):
+            raise ValueError(f"audio_fs 非法: {raw_fs!r}")
+        if not (_MIN_AUDIO_FS <= audio_fs <= _MAX_AUDIO_FS):
+            raise ValueError(
+                f"audio_fs 必须在 [{_MIN_AUDIO_FS}, {_MAX_AUDIO_FS}] 范围内，收到 {audio_fs}")
+        self.audio_fs = audio_fs
         if cfg_msg.get("language") is not None:
             self.language = cfg_msg.get("language")
         self.wav_name = cfg_msg.get("wav_name", self.sid)
@@ -147,7 +135,9 @@ class StreamSession:
         if self.buffer is None:
             self.configure({})
         arr = pcm_bytes_to_array(pcm_bytes)
-        if self.audio_fs != _TARGET_SR and arr.size:
+        if arr.size == 0:
+            return                          # 空帧直接忽略，不喂 VAD
+        if self.audio_fs != _TARGET_SR:
             arr = await self._in_thread(resample_to_16k, arr, self.audio_fs)
         self.buffer.append(arr)
 
@@ -173,15 +163,27 @@ class StreamSession:
             self.seg_start_ms = end_ms
             self.buffer.drop_until_ms(end_ms)
 
+        # 无活动语音段（长静音）时裁剪缓冲，防止内存无界增长；
+        # 保留 _IDLE_KEEP_MS 余量，覆盖后续 VAD start 事件的时间回溯
+        if self.seg_start_ms is None:
+            keep_from = self.buffer.end_ms - _IDLE_KEEP_MS
+            if keep_from > self.buffer.base_ms:
+                self.buffer.drop_until_ms(keep_from)
+
     async def flush(self):
         """收到 {type:"stop"} 时冲刷末句。"""
         if self.buffer is None:
             return
         logger.debug(f"[stream] flush sid={self.sid[:8]} 总帧数={self._frame_count} "
                      f"seg_start={self.seg_start_ms}")
-        events = await self._in_thread(
-            self._svad.process_chunk, np.zeros(0, dtype=np.float32), self.vad_cache, True
-        )
+        try:
+            events = await self._in_thread(
+                self._svad.process_chunk, np.zeros(0, dtype=np.float32), self.vad_cache, True
+            )
+        except Exception as e:
+            # FunASR 对空输入 + is_final 的行为无保证；失败不阻断末句缓冲冲刷
+            logger.warning(f"[stream] VAD final 冲刷失败，继续冲刷剩余缓冲: {e}")
+            events = []
         for ev in events:
             async for msg in self._on_event(ev):
                 yield msg
@@ -213,7 +215,7 @@ class StreamSession:
         async with self._asr_sem:                      # 串行化 GPU/ASR
             res = await self._in_thread(self._asr.transcribe_array, seg, _TARGET_SR, self.language)
         decode_ms = (time.monotonic() - t0) * 1000
-        text = _extract_text(res)
+        text = extract_text(res)
         if self._punc is not None and text.strip():
             try:
                 text = await self._in_thread(self._punc.restore, text)
@@ -229,7 +231,7 @@ class StreamSession:
             "end": int(end_ms),
         }
         if self._enable_words:
-            words = _extract_words(res, int(start_ms) / 1000.0)
+            words = extract_words(res, int(start_ms) / 1000.0)
             if words:
                 msg["words"] = words
         self.seg_id += 1
@@ -250,12 +252,16 @@ class VadOfflineBackend:
         self._max_sessions = max_sessions
         self._max_segment_sec = max_segment_sec
         self._enable_words = bool(getattr(asr, "align_enabled", False))
+        # 在事件循环启动前创建：依赖 Python >=3.10 的 Semaphore 延迟绑定循环语义
+        # （setup.sh 已强制 3.10/3.12；<3.10 会在此处 RuntimeError）
         self._asr_sem = asyncio.Semaphore(asr_concurrency)
         self._executor = ThreadPoolExecutor(
             max_workers=max(2, asr_concurrency + 2), thread_name_prefix="stream-asr"
         )
         self._active = 0
-        self._count_lock = asyncio.Lock()
+        # threading.Lock：acquire（异步）与 release（同步）双侧共用同一把锁，
+        # 临界区仅计数读改写，不阻塞事件循环
+        self._count_lock = threading.Lock()
         self.capabilities = {
             "partial_results": False,
             "word_timestamps": self._enable_words,
@@ -263,7 +269,7 @@ class VadOfflineBackend:
         }
 
     async def acquire(self) -> bool:
-        async with self._count_lock:
+        with self._count_lock:
             if self._active >= self._max_sessions:
                 return False
             self._active += 1
@@ -281,7 +287,8 @@ class VadOfflineBackend:
                 session.buffer = None
                 session.vad_cache = None
         finally:
-            self._active = max(0, self._active - 1)
+            with self._count_lock:
+                self._active = max(0, self._active - 1)
 
     def shutdown(self):
         self._executor.shutdown(wait=False, cancel_futures=True)

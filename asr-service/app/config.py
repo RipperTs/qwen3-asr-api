@@ -112,7 +112,8 @@ MAX_STREAM_SESSIONS = 16        # 最大并发会话数（超额 WS 关闭 1013�
 STREAM_VAD_CHUNK_MS = 200       # 在线 VAD 分块时长（毫秒）
 STREAM_ASR_CONCURRENCY = 2      # ASR 解码并发上限（信号量串行化 GPU）
 STREAM_MAX_SEGMENT_SEC = 12     # 长无停顿句兜底切分阈值（秒）
-STREAM_MAX_SESSION_SECONDS = 3600   # 单会话最长时长（秒）
+STREAM_MAX_SESSION_SECONDS = 3600   # 单会话最长时长（秒），超时回 session_timeout 并关闭
+STREAM_MAX_FRAME_BYTES = 2 * 1024 * 1024    # 单条二进制帧上限（字节），超限拒帧不断连
 STREAM_SAMPLE_RATE = 16000      # 内部统一采样率
 
 # ─── vLLM（Phase 3）───

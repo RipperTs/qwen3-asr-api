@@ -4,6 +4,7 @@
 二者实现同一 StreamBackend 接口。连接即下发 session.created 声明协议/后端/能力。
 鉴权复用 cfg.API_KEY + hmac.compare_digest（与 HTTP 一致）。
 """
+import asyncio
 import hmac
 import json
 import logging
@@ -54,11 +55,12 @@ async def stream(ws: WebSocket):
         await ws.close(code=1013)
         return
 
-    await ws.accept()
+    # acquire 成功后任何失败路径（含 accept 异常）都必须经 finally 释放计数
     session = None
     recv_bytes = 0
     sent_msgs = 0
     try:
+        await ws.accept()
         # 连接即声明协议/后端/能力
         await ws.send_json(SessionCreated(
             mode=_backend.mode,
@@ -69,25 +71,45 @@ async def stream(ws: WebSocket):
         sid = uuid4().hex
         session = _backend.create_session(sid)
         logger.info(f"[stream] WS accepted sid={sid[:8]}")
-        start_msg = await ws.receive_json()             # 首条 {type:"start", ...}
+
+        # 会话级超时：从 accept 起计 STREAM_MAX_SESSION_SECONDS（含等待 start 阶段）
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + cfg.STREAM_MAX_SESSION_SECONDS
+
+        start_msg = await asyncio.wait_for(             # 首条 {type:"start", ...}
+            ws.receive_json(), timeout=deadline - loop.time())
         logger.info(f"[stream] 收到 start: {start_msg}")
-        session.configure(start_msg)
+        try:
+            session.configure(start_msg)
+        except ValueError as e:
+            # 配置校验失败属客户端错误，消息为服务端自产文案，可直接回传
+            await ws.send_json(ErrorMsg(
+                code="invalid_config", message=str(e), fatal=True).model_dump())
+            return
 
         while True:
-            m = await ws.receive()
+            m = await asyncio.wait_for(ws.receive(), timeout=deadline - loop.time())
             if m["type"] == "websocket.disconnect":
                 logger.info(f"[stream] 客户端断开 sid={sid[:8]} "
                             f"累计收字节={recv_bytes} 累计发消息={sent_msgs}")
                 break
             if m.get("bytes") is not None:
+                if len(m["bytes"]) > cfg.STREAM_MAX_FRAME_BYTES:
+                    logger.warning(f"[stream] 拒收超限帧 sid={sid[:8]} "
+                                   f"{len(m['bytes'])}B > {cfg.STREAM_MAX_FRAME_BYTES}B")
+                    await ws.send_json(ErrorMsg(
+                        code="frame_too_large",
+                        message=f"单帧超过上限 {cfg.STREAM_MAX_FRAME_BYTES} 字节").model_dump())
+                    continue
                 recv_bytes += len(m["bytes"])
                 try:
                     async for r in session.feed_audio(m["bytes"]):
                         await ws.send_json(r)
                         sent_msgs += 1
                 except Exception as e:
-                    logger.warning(f"音频处理失败: {e}")
-                    await ws.send_json(ErrorMsg(code="feed_failed", message=str(e)).model_dump())
+                    logger.warning(f"音频处理失败: {e}", exc_info=True)
+                    await ws.send_json(ErrorMsg(
+                        code="feed_failed", message="音频处理失败").model_dump())
             elif m.get("text"):
                 try:
                     typ = json.loads(m["text"]).get("type")
@@ -101,6 +123,14 @@ async def stream(ws: WebSocket):
                     break
     except WebSocketDisconnect:
         pass
+    except asyncio.TimeoutError:
+        logger.info(f"[stream] 会话超时关闭 (>{cfg.STREAM_MAX_SESSION_SECONDS}s) "
+                    f"累计收字节={recv_bytes}")
+        try:
+            await ws.send_json(ErrorMsg(
+                code="session_timeout", message="会话超时", fatal=True).model_dump())
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"实时会话异常: {e}", exc_info=True)
         try:

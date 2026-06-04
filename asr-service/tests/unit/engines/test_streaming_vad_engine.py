@@ -30,6 +30,12 @@ def test_new_cache_is_empty_dict():
     assert sve.new_cache() == {}
 
 
+def test_shares_infer_lock_with_offline_engine():
+    # 在线封装与离线 VADEngine 共用同一把推理锁（模型非线程安全）
+    sve, vad = _sve([])
+    assert sve._infer_lock is vad._infer_lock
+
+
 def test_parse_start():
     sve, _ = _sve([{"value": [[100, -1]]}])
     assert sve.process_chunk(np.zeros(10, dtype=np.float32), {}, False) == \

@@ -191,6 +191,68 @@ def test_backend_capabilities_reflect_align():
     b2.shutdown()
 
 
+# ─── 输入校验（audio_fs）───
+
+@pytest.mark.parametrize("bad_fs", [0, -1, 1, 7999, 96001, "abc", {}])
+def test_configure_rejects_invalid_audio_fs(bad_fs):
+    s = StreamSession("sid", FakeSVAD(), MagicMock(), None,
+                      ThreadPoolExecutor(max_workers=1), asyncio.Semaphore(1))
+    with pytest.raises(ValueError):
+        s.configure({"audio_fs": bad_fs})
+
+
+@pytest.mark.parametrize("ok_fs", [8000, 16000, 48000, 96000])
+def test_configure_accepts_valid_audio_fs(ok_fs):
+    s = StreamSession("sid", FakeSVAD(), MagicMock(), None,
+                      ThreadPoolExecutor(max_workers=1), asyncio.Semaphore(1))
+    s.configure({"audio_fs": ok_fs})
+    assert s.audio_fs == ok_fs
+
+
+# ─── 空帧 / 长静音 / flush 容错 ───
+
+async def test_empty_frame_skips_vad():
+    svad = FakeSVAD()
+    s, asr, ex = _make_session(svad)
+    try:
+        assert await _collect(s.feed_audio(b"")) == []
+        assert svad.calls == 0                      # 空帧不喂 VAD
+    finally:
+        ex.shutdown(wait=False)
+
+
+async def test_idle_buffer_trimmed_during_silence():
+    # 无 VAD 事件（长静音）时缓冲应被裁剪，防止无界增长
+    svad = FakeSVAD()                               # 永不产出事件
+    s, asr, ex = _make_session(svad)
+    try:
+        for _ in range(10):
+            await _collect(s.feed_audio(_pcm_ms(1000)))   # 共 10s 静音
+        assert s.buffer.end_ms == 10000
+        assert s.buffer.end_ms - s.buffer.base_ms <= 5000  # 仅保留回溯余量
+    finally:
+        ex.shutdown(wait=False)
+
+
+async def test_flush_survives_vad_final_failure():
+    # VAD final 冲刷抛异常时，仍应冲刷未闭合句的剩余缓冲
+    class RaisingFinalSVAD(FakeSVAD):
+        def process_chunk(self, arr, cache, is_final):
+            if is_final:
+                raise RuntimeError("vad boom")
+            return super().process_chunk(arr, cache, is_final)
+
+    svad = RaisingFinalSVAD(events_by_call={0: [{"type": "start", "start": 0, "end": None}]})
+    s, asr, ex = _make_session(svad)
+    try:
+        await _collect(s.feed_audio(_pcm_ms(800)))
+        flushed = await _collect(s.flush())
+        assert len(flushed) == 1
+        assert flushed[0]["type"] == "final" and flushed[0]["start"] == 0
+    finally:
+        ex.shutdown(wait=False)
+
+
 # ─── AudioBuffer ───
 
 def test_audio_buffer_slice_and_drop():
@@ -204,3 +266,30 @@ def test_audio_buffer_slice_and_drop():
     buf.drop_until_ms(1000)
     assert buf.base_ms == 1000
     assert buf.slice_ms(1000, 2000).shape[0] == 16000
+
+
+def test_audio_buffer_chunked_append_and_cross_chunk_slice():
+    # 分块存储：多次 append 后跨块切片/裁剪结果与单块语义一致
+    buf = AudioBuffer(16000)
+    for _ in range(10):
+        buf.append(np.ones(1600, dtype=np.float32))  # 10 × 100ms
+    assert buf.end_ms == 1000
+    assert buf.slice_ms(0, 1000).shape[0] == 16000
+    assert buf.slice_ms(250, 750).shape[0] == 8000   # 跨块切片
+
+    buf.drop_until_ms(500)
+    assert buf.base_ms == 500
+    buf.append(np.zeros(1600, dtype=np.float32))     # drop 后继续追加
+    assert buf.end_ms == 1100
+    assert buf.slice_ms(500, 1100).shape[0] == 9600
+
+
+def test_audio_buffer_drop_all_then_append():
+    buf = AudioBuffer(16000)
+    buf.append(np.ones(1600, dtype=np.float32))
+    buf.drop_until_ms(100)                           # 全量释放
+    assert buf.base_ms == 100 and buf.end_ms == 100
+    assert buf.slice_ms(0, 100).shape[0] == 0
+    buf.append(np.ones(1600, dtype=np.float32))
+    assert buf.end_ms == 200
+    assert buf.slice_ms(100, 200).shape[0] == 1600

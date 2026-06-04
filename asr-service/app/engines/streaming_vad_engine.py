@@ -28,6 +28,8 @@ class StreamingVADEngine:
         if vad_engine._model is None:
             raise RuntimeError("VAD 模型未加载，无法创建在线 VAD 封装，请先 VADEngine.load()")
         self._model = vad_engine._model      # 共享只读权重
+        # 与离线 VADEngine.detect 共用同一把推理锁（AutoModel.generate 非线程安全）
+        self._infer_lock = vad_engine._infer_lock
         self._chunk_ms = chunk_ms
 
     def new_cache(self) -> dict:
@@ -39,14 +41,15 @@ class StreamingVADEngine:
 
         事件: {"type": "start"|"end"|"complete", "start": ms|None, "end": ms|None}
         """
-        res = self._model.generate(
-            input=pcm16k,
-            cache=cache,
-            is_final=is_final,
-            chunk_size=self._chunk_ms,
-            fs=16000,
-            disable_pbar=True,
-        )
+        with self._infer_lock:               # 串行化多会话/跨路径的并发推理
+            res = self._model.generate(
+                input=pcm16k,
+                cache=cache,
+                is_final=is_final,
+                chunk_size=self._chunk_ms,
+                fs=16000,
+                disable_pbar=True,
+            )
         return self._parse(res)
 
     def _parse(self, res) -> list[dict]:

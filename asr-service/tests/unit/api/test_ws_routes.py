@@ -97,3 +97,71 @@ def test_over_limit_rejected(monkeypatch):
         with client.websocket_connect("/v2/asr/stream") as ws:
             ws.receive_json()
     assert exc.value.code == 1013
+
+
+def test_invalid_config_returns_error_and_releases():
+    class BadConfigSession(FakeSession):
+        def configure(self, msg):
+            raise ValueError("audio_fs 必须在 [8000, 96000] 范围内，收到 0")
+
+    class BadConfigBackend(FakeBackend):
+        def create_session(self, sid):
+            return BadConfigSession()
+
+    backend = BadConfigBackend()
+    client = _make_client(backend)
+    with client.websocket_connect("/v2/asr/stream") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        ws.send_json({"type": "start", "audio_fs": 0})
+        err = ws.receive_json()
+        assert err["type"] == "error" and err["code"] == "invalid_config"
+        assert err["fatal"] is True
+        assert ws.receive_json()["type"] == "session.closed"
+    assert backend.released is True
+
+
+def test_frame_too_large_rejected_session_continues(monkeypatch):
+    monkeypatch.setattr("app.config.STREAM_MAX_FRAME_BYTES", 8)
+    backend = FakeBackend()
+    client = _make_client(backend)
+    with client.websocket_connect("/v2/asr/stream") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "start"})
+        ws.send_bytes(b"\x00" * 16)                  # 超限 → 拒帧不断连
+        err = ws.receive_json()
+        assert err["type"] == "error" and err["code"] == "frame_too_large"
+        ws.send_bytes(b"\x00\x00")                   # 正常帧仍可处理
+        assert ws.receive_json()["type"] == "final"
+        ws.send_json({"type": "stop"})
+        assert ws.receive_json()["seg_id"] == 1
+        assert ws.receive_json()["type"] == "session.closed"
+    assert backend.released is True
+
+
+def test_session_timeout_sends_error_and_releases(monkeypatch):
+    monkeypatch.setattr("app.config.STREAM_MAX_SESSION_SECONDS", 0)
+    backend = FakeBackend()
+    client = _make_client(backend)
+    with client.websocket_connect("/v2/asr/stream") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        err = ws.receive_json()
+        assert err["type"] == "error" and err["code"] == "session_timeout"
+        assert err["fatal"] is True
+        assert ws.receive_json()["type"] == "session.closed"
+    assert backend.released is True
+
+
+def test_release_called_when_create_session_fails():
+    # acquire 成功后任何异常路径（如 create_session 抛错）都必须释放计数
+    class BoomBackend(FakeBackend):
+        def create_session(self, sid):
+            raise RuntimeError("boom")
+
+    backend = BoomBackend()
+    client = _make_client(backend)
+    with client.websocket_connect("/v2/asr/stream") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        err = ws.receive_json()
+        assert err["type"] == "error" and err["code"] == "internal"
+        assert ws.receive_json()["type"] == "session.closed"
+    assert backend.released is True

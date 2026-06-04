@@ -2,11 +2,11 @@ import os
 import shutil
 import logging
 import soundfile as sf
-import numpy as np
 
 from app.engines.vad_engine import VADEngine
 from app.engines.punc_engine import PuncEngine
 from app.pipeline.audio_preprocessor import convert_to_wav, get_audio_duration
+from app.utils.result_parser import extract_text, extract_words
 from app.config import (
     UPLOADS_DIR,
     AUDIO_CHUNKS_DIR,
@@ -361,44 +361,12 @@ class ASRPipeline:
         return chunks
 
     def _extract_text(self, results) -> str:
-        """从 qwen_asr transcribe 结果中提取纯文本"""
-        if not results:
-            return ""
-        if isinstance(results, str):
-            return results
-        if isinstance(results, list):
-            texts = []
-            for item in results:
-                if hasattr(item, "text"):
-                    texts.append(item.text)
-                elif isinstance(item, dict):
-                    texts.append(item.get("text", ""))
-                elif isinstance(item, str):
-                    texts.append(item)
-            return "".join(texts)
-        if hasattr(results, "text"):
-            return results.text
-        return str(results)
+        """从 qwen_asr transcribe 结果中提取纯文本（委托共享实现）"""
+        return extract_text(results)
 
     def _extract_words(self, results, offset_sec: float) -> list[dict] | None:
-        """从 qwen_asr 结果中提取单词级时间戳（带偏移修正）"""
-        if not results or not isinstance(results, list):
-            return None
-
-        words = []
-        for item in results:
-            # ASRTranscription.time_stamps -> ForcedAlignResult.items -> [ForcedAlignItem]
-            ts = getattr(item, "time_stamps", None)
-            if ts is None:
-                continue
-            align_items = getattr(ts, "items", [])
-            for w in align_items:
-                words.append({
-                    "text": w.text,
-                    "start": round(w.start_time + offset_sec, 3),
-                    "end": round(w.end_time + offset_sec, 3),
-                })
-        return words if words else None
+        """从 qwen_asr 结果中提取单词级时间戳（委托共享实现）"""
+        return extract_words(results, offset_sec)
 
     def _cleanup(self, original_path: str, wav_path: str | None, chunk_dir: str):
         """清理临时文件"""
