@@ -29,9 +29,21 @@ DOCS_ROUTE_PREFIX = "/web-ui/docs"
 # README*.md → / 保持同布局（WORKDIR /app 的父目录即 /）
 REPO_ROOT = os.path.dirname(BASE_DIR)
 
-_TEMPLATE = open(
-    os.path.join(os.path.dirname(__file__), "docs_template.html"), encoding="utf-8"
-).read()
+_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "docs_template.html")
+_template: str | None = None
+
+
+def _get_template() -> str | None:
+    """懒加载页面模板；缺失时记录错误并返回 None（路由层转 404），不影响模块导入。"""
+    global _template
+    if _template is None:
+        try:
+            with open(_TEMPLATE_PATH, encoding="utf-8") as f:
+                _template = f.read()
+        except OSError as e:
+            logger.error(f"文档模板读取失败: {e}")
+            return None
+    return _template
 
 # 侧边导航顺序与短标题（slug 去 _en 后缀为键；不在表中的文档排在末尾、用文档 h1 兜底）
 _NAV_ORDER = ["readme", "deployment", "configuration", "api/v2", "api/v1", "architecture"]
@@ -84,9 +96,14 @@ def _scan_registry() -> dict:
                 f"{sub}/{name}" for name in sorted(os.listdir(d)) if name.endswith(".md")
             ]
     registry = {}
+    repo_real = os.path.realpath(REPO_ROOT)
     for rel in candidates:
         path = os.path.join(REPO_ROOT, rel)
         if not os.path.isfile(path):
+            continue
+        # 防符号链接逃逸：实际路径必须落在仓库根内
+        if os.path.commonpath([os.path.realpath(path), repo_real]) != repo_real:
+            logger.warning(f"文档 {rel} 实际路径越出仓库根，已跳过")
             continue
         slug = _slug_for(rel)
         registry[slug] = {
@@ -133,6 +150,7 @@ class _LinkRewriter(Treeprocessor):
             return href
         path, _, anchor = href.partition("#")
         suffix = f"#{anchor}" if anchor else ""
+        path = path.partition("?")[0]  # 剥离查询字符串，避免 slug 匹配失败
         norm = posixpath.normpath(posixpath.join(self._cur_dir, path))
         slug = self._rel_to_slug.get(norm)
         if slug is not None:
@@ -197,6 +215,10 @@ def render_doc_page(slug: str) -> str | None:
         logger.warning(f"文档读取失败 {info['relpath']}: {e}")
         return None
 
+    template = _get_template()
+    if template is None:
+        return None
+
     rel_to_slug = {v["relpath"]: k for k, v in registry.items()}
     md = markdown.Markdown(
         extensions=[
@@ -208,7 +230,7 @@ def render_doc_page(slug: str) -> str | None:
         extension_configs={"toc": {"slugify": _github_slugify}},
     )
     page = (
-        _TEMPLATE
+        template
         .replace("__DOC_TITLE__", html.escape(info["title"]))
         .replace("__DOC_NAV__", _build_nav(slug, registry))
         .replace("__DOC_BODY__", md.convert(text))

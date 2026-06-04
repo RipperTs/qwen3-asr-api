@@ -120,9 +120,7 @@ async def list_tasks(
     tasks = _task_manager.list_tasks(status=status)
     if history and _task_store is not None:
         seen = {t["task_id"] for t in tasks}
-        rows = await asyncio.to_thread(_task_store.list_history, limit)
-        if status:
-            rows = [r for r in rows if r["status"] == status]
+        rows = await asyncio.to_thread(_task_store.list_history, limit, status)
         tasks.extend(r for r in rows if r["task_id"] not in seen)
         tasks.sort(key=lambda t: t.get("created_at") or "", reverse=True)
         tasks = tasks[:limit]

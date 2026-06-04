@@ -76,6 +76,30 @@ def test_get_missing_returns_none(store_factory):
     assert store_factory().get_task("nope") is None
 
 
+def test_insert_duplicate_keeps_existing(store_factory, caplog):
+    """task_id 冲突时不覆盖既有记录（INSERT OR IGNORE），仅告警。"""
+    store = store_factory()
+    t = _task("t1")
+    store.insert_task(t)
+    t.update(status="failed", error="boom", finished_at=datetime.now().isoformat())
+    store.finalize_task(t)
+
+    with caplog.at_level("WARNING"):
+        store.insert_task(_task("t1"))  # 重复插入 pending
+    task = store.get_task("t1")
+    assert task["status"] == "failed"           # 原终态记录未被覆盖
+    assert task["error"] == "boom"
+    assert "已存在" in caplog.text
+
+
+def test_update_status_missing_task_warns(store_factory, caplog):
+    """UPDATE 匹配 0 行（如 insert 曾失败）不再静默，记录告警。"""
+    store = store_factory()
+    with caplog.at_level("WARNING"):
+        store.update_status("ghost", "processing")
+    assert "无匹配记录" in caplog.text
+
+
 def test_finalize_writes_result_json(store_factory):
     store = store_factory()
     t = _task("t1")
@@ -162,6 +186,21 @@ def test_list_history_limit(store_factory):
         t.update(status="completed", finished_at=(base + timedelta(minutes=i + 1)).isoformat())
         store.finalize_task(t)
     assert len(store.list_history(limit=3)) == 3
+
+
+def test_list_history_status_filter_in_sql(store_factory):
+    """status 过滤在 SQL 侧执行，limit 语义按过滤后结果计算。"""
+    store = store_factory()
+    base = datetime(2026, 6, 1, 10, 0, 0)
+    for i in range(4):
+        status = "failed" if i % 2 else "completed"
+        t = _task(f"t{i}", created_at=(base + timedelta(minutes=i)).isoformat())
+        store.insert_task(t)
+        t.update(status=status, finished_at=(base + timedelta(minutes=i + 1)).isoformat())
+        store.finalize_task(t)
+    failed = store.list_history(limit=10, status="failed")
+    assert [t["task_id"] for t in failed] == ["t3", "t1"]
+    assert store.list_history(limit=1, status="failed")[0]["task_id"] == "t3"
 
 
 def test_delete_task(store_factory):

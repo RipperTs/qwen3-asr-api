@@ -258,11 +258,16 @@ def _assemble_standard(app: FastAPI, args) -> None:
     @app.on_event("shutdown")
     def on_shutdown():
         logger.info("收到终止信号，正在安全关闭服务...")
-        task_manager.shutdown()
+        worker_exited = task_manager.shutdown()
         if stream_backend is not None:
             stream_backend.shutdown()
         if task_store is not None:
-            task_store.close()
+            if worker_exited:
+                task_store.close()
+            else:
+                # 工作线程仍在收尾（finalize 落库中），跳过 close 避免竞态；
+                # WAL 模式下进程退出后可恢复，悬挂任务由下次启动 close_dangling 收口
+                logger.warning("工作线程未在超时内退出，跳过任务库连接关闭")
         logger.info("Qwen3-ASR Service 已安全退出")
 
     logger.info(f"运行模式: {service_info}")

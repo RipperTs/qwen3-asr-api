@@ -319,7 +319,7 @@ def test_list_tasks_history_merges_dedup_sorted(make_client):
     body = client.get("/v1/tasks", params={"history": "true"}).json()
     assert [t["task_id"] for t in body["tasks"]] == ["h1", "m1", "h2"]
     assert body["tasks"][1]["status"] == "processing"   # 去重保内存版本
-    store.list_history.assert_called_once_with(50)
+    store.list_history.assert_called_once_with(50, None)
 
 
 def test_list_tasks_history_limit_truncates(make_client):
@@ -332,20 +332,21 @@ def test_list_tasks_history_limit_truncates(make_client):
     client = make_client(task_manager=tm, task_store=store)
     body = client.get("/v1/tasks", params={"history": "true", "limit": 2}).json()
     assert body["total"] == 2
-    store.list_history.assert_called_once_with(2)
+    store.list_history.assert_called_once_with(2, None)
 
 
 def test_list_tasks_history_respects_status_filter(make_client):
+    """status 过滤下推到 list_history（SQL 侧），保证 limit 语义不被 Python 侧过滤稀释。"""
     tm = MagicMock()
     tm.list_tasks.return_value = []
     store = MagicMock()
     store.list_history.return_value = [
-        _history_row("ok", "2026-06-02T08:00:00", status="completed"),
         _history_row("bad", "2026-06-03T08:00:00", status="failed"),
     ]
     client = make_client(task_manager=tm, task_store=store)
     body = client.get("/v1/tasks", params={"history": "true", "status": "failed"}).json()
     assert [t["task_id"] for t in body["tasks"]] == ["bad"]
+    store.list_history.assert_called_once_with(50, "failed")
 
 
 def test_cancel_history_task_deletes_record(make_client):

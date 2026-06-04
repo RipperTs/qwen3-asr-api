@@ -72,33 +72,42 @@ class TaskStore:
 
     # ─── 写路径（TaskManager 钩子）───
 
-    def _commit_write(self, sql: str, params: tuple) -> None:
-        """须在持有 self._lock 时调用；库异常自吞（容错契约：不拖垮任务执行）。"""
+    def _commit_write(self, sql: str, params: tuple) -> int:
+        """须在持有 self._lock 时调用；库异常自吞（容错契约：不拖垮任务执行）。
+
+        返回受影响行数（异常时 -1），调用方据此发现"静默无效"的写入。
+        """
         try:
-            self._conn.execute(sql, params)
+            cur = self._conn.execute(sql, params)
             self._conn.commit()
+            return cur.rowcount
         except sqlite3.Error as e:
             logger.warning(f"任务持久化写入失败（任务继续执行）: {e}")
+            return -1
 
     def insert_task(self, task: dict) -> None:
-        """任务创建时写入 pending 记录。"""
+        """任务创建时写入 pending 记录；task_id 已存在时不覆盖既有记录。"""
         with self._lock:
-            self._commit_write(
-                "INSERT OR REPLACE INTO tasks"
+            affected = self._commit_write(
+                "INSERT OR IGNORE INTO tasks"
                 "(task_id, status, progress, language, wav_name, created_at, updated_at)"
                 " VALUES(?, ?, ?, ?, ?, ?, ?)",
                 (task["task_id"], task["status"], task.get("progress", 0.0),
                  task.get("language"), task.get("wav_name"),
                  task["created_at"], task["created_at"]),
             )
+        if affected == 0:
+            logger.warning(f"任务记录已存在，跳过插入（保留原记录）: {task['task_id']}")
 
     def update_status(self, task_id: str, status: str) -> None:
         """非终态状态跃迁（pending→processing）立即写，不受进度节流限制。"""
         with self._lock:
-            self._commit_write(
+            affected = self._commit_write(
                 "UPDATE tasks SET status=?, updated_at=? WHERE task_id=?",
                 (status, datetime.now().isoformat(), task_id),
             )
+        if affected == 0:
+            logger.warning(f"任务持久化状态更新无匹配记录: {task_id} → {status}")
 
     def save_progress(self, task_id: str, progress: float) -> None:
         """进度合并写：距上次落库不足 PROGRESS_WRITE_INTERVAL 则静默跳过。"""
@@ -123,13 +132,15 @@ class TaskStore:
                 logger.warning(f"任务结果序列化失败，仅持久化元数据: {e}")
         with self._lock:
             self._last_progress_write.pop(task["task_id"], None)
-            self._commit_write(
+            affected = self._commit_write(
                 "UPDATE tasks SET status=?, progress=?, result=?, error=?,"
                 " updated_at=?, finished_at=? WHERE task_id=?",
                 (task["status"], task.get("progress", 0.0), result_json,
                  task.get("error"), datetime.now().isoformat(),
                  task.get("finished_at"), task["task_id"]),
             )
+        if affected == 0:
+            logger.warning(f"任务终态持久化无匹配记录（结果未落库）: {task['task_id']}")
 
     # ─── 读路径（路由经 asyncio.to_thread 调用）───
 
@@ -150,20 +161,22 @@ class TaskStore:
         if task.get("result"):
             try:
                 task["result"] = json.loads(task["result"])
-            except ValueError:
+            except (ValueError, TypeError):
                 logger.warning(f"任务结果反序列化失败: {task_id}")
                 task["result"] = None
         return task
 
-    def list_history(self, limit: int = 50) -> list[dict]:
-        """终态任务摘要（不含 result），created_at 倒序。"""
+    def list_history(self, limit: int = 50, status: str | None = None) -> list[dict]:
+        """终态任务摘要（不含 result），created_at 倒序；status 过滤下推 SQL，保证 limit 语义。"""
+        sql = f"SELECT {_SUMMARY_COLS} FROM tasks WHERE finished_at IS NOT NULL"
+        params: tuple = (limit,)
+        if status:
+            sql += " AND status=?"
+            params = (status, limit)
+        sql += " ORDER BY created_at DESC LIMIT ?"
         with self._lock:
             try:
-                rows = self._conn.execute(
-                    f"SELECT {_SUMMARY_COLS} FROM tasks"
-                    " WHERE finished_at IS NOT NULL ORDER BY created_at DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
+                rows = self._conn.execute(sql, params).fetchall()
             except sqlite3.Error as e:
                 logger.warning(f"任务持久化读取失败: {e}")
                 return []

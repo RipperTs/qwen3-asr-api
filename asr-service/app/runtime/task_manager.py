@@ -151,6 +151,7 @@ class TaskManager:
             with self._lock:
                 task = self._tasks.get(task_id)
                 if not task:
+                    self._queue.task_done()
                     continue
                 # pending 时已被取消的任务，跳过处理
                 if task.get("status") == "cancelled":
@@ -206,8 +207,12 @@ class TaskManager:
             finally:
                 self._queue.task_done()
 
-    def shutdown(self):
-        """安全终止：停止工作线程并关闭线程池"""
+    def shutdown(self) -> bool:
+        """安全终止：停止工作线程并关闭线程池。
+
+        返回工作线程是否已退出；False 表示仍有任务在收尾（finalize 可能尚未完成），
+        调用方不应在此时关闭 task_store 连接（避免与 finalize 落库竞态）。
+        """
         logger.info("正在终止任务管理器...")
         self._stop_event.set()
         self._executor.shutdown(wait=False, cancel_futures=True)
@@ -215,7 +220,9 @@ class TaskManager:
             self._worker_thread.join(timeout=5)
         if self._cleanup_thread and self._cleanup_thread.is_alive():
             self._cleanup_thread.join(timeout=2)
+        worker_exited = not (self._worker_thread and self._worker_thread.is_alive())
         logger.info("任务管理器已终止")
+        return worker_exited
 
     def _cleanup_loop(self):
         """定期清理已完成/失败的过期任务"""
