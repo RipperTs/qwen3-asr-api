@@ -3,6 +3,8 @@ import os
 import sys
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.utils.logger import setup_logger
 from app.utils.arg_schema import build_parser
@@ -67,6 +69,8 @@ def create_app(args=None) -> FastAPI:
 
     serve_mode = getattr(args, "serve_mode", "standard")
     app = FastAPI(title="Qwen3-ASR Service", version="2.0.0")
+    # 响应压缩（vendored 前端库 1.7MB → ~426KB；仅作用于 HTTP，WS 不受影响）
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     if serve_mode == "vllm":
         _assemble_vllm(app, args)
@@ -251,8 +255,9 @@ def _assemble_standard(app: FastAPI, args) -> None:
 
     # 条件挂载 Web UI
     if getattr(args, "web", False):
-        from app.web.views import web_router
+        from app.web.views import web_router, ASSETS_DIR
         app.include_router(web_router)
+        app.mount("/web-ui/assets", StaticFiles(directory=ASSETS_DIR), name="web-assets")
         logger.info(f"Web UI 已启用，访问 http://{cfg.HOST}:{cfg.PORT}/web-ui")
 
     @app.on_event("shutdown")
