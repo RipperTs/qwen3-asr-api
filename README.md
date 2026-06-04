@@ -113,7 +113,7 @@ bash start.sh --host 0.0.0.0 --port 9000
 
 #### 启用 API 认证
 
-设置 API 密钥后，所有接口（除 `/v1/health` 外）需要携带 Bearer Token：
+设置 API 密钥后，所有接口（除 `/health`、`/capabilities` 外）需要携带 Bearer Token：
 
 ```bash
 # 通过启动参数设置
@@ -126,47 +126,19 @@ bash start.sh
 
 #### 配置文件（config.yaml）
 
-启动参数也可以通过 YAML 配置文件统一管理，不必每次写一长串命令行：
+启动参数也可以通过 YAML 配置文件统一管理。首次 `bash start.sh` 会自动从 `config.example.yaml` 生成一份可编辑的 `asr-service/config.yaml` 并加载：
 
-```bash
-# 默认行为：自动加载 asr-service/config.yaml（支持 config.yml 别名）；
-# 首次启动若不存在，会自动从 config.example.yaml 拷贝生成一份可编辑的 config.yaml
-bash start.sh
+- **优先级**（低 → 高）：内置默认值 < 环境变量 < 配置文件 < 命令行显式参数。
+- 删除 `config.yaml` 后重启 = 重置配置；`--no-config` 可完全跳过。
+- 未知键 / 类型错误会在启动时直接报错，防止拼写错误静默生效。
 
-# 显式指定配置文件
-bash start.sh --config /path/to/my-config.yaml
-
-# 命令行参数临时覆盖配置文件（只影响本次启动，不改文件）
-bash start.sh --device cpu
-
-# 跳过配置文件（纯默认值 + 环境变量 + 命令行启动，排障用）
-bash start.sh --no-config
-```
-
-- **优先级**（低 → 高）：内置默认值 < 环境变量（`ASR_API_KEY`/`MODEL_SOURCE`）< 配置文件 < 命令行显式参数。
-- 配置键名 = 命令行长参数横线转下划线（如 `--model-size` → `model_size`），全部可配项见 [`asr-service/config.example.yaml`](asr-service/config.example.yaml)。
-- **删除 `config.yaml` 后重启 = 重置配置**（重新由 example 生成默认配置）。
-- 未知键 / 类型错误 / 取值越界会在启动时直接报错，防止拼写错误静默生效。
-- `config.yaml` 可能包含 `api_key`，已加入 `.gitignore`，请勿提交；`GET /health` 的 `config_file` 字段会回显本次生效的配置文件名。
+完整说明（自动发现、校验规则、环境变量、全部参数表）见 **[配置文档](docs/configuration.md)**。
 
 #### 离线任务持久化（tasks.db）
 
-默认情况下任务只存在内存中，服务重启后结果不可查。开启任务持久化后（`config.example.yaml` 生成的配置中默认开启），任务元数据与最终结果会写入 `asr-service/data/tasks.db`（SQLite），跨重启可查：
+开启 `enable_task_store` 后（example 生成的配置中默认开启），任务结果写入 `asr-service/data/tasks.db`，**跨重启可查**；重启时未完成任务标记为 `failed`，终态记录默认保留 7 天（启动时清理）。
 
-```yaml
-# config.yaml
-enable_task_store: true     # 开关（命令行对应 --enable-task-store / --no-task-store）
-# task_db_path: data/tasks.db
-# task_retention_days: 7    # 过期清理窗口（天）；0 = 永不清理
-```
-
-行为说明：
-
-- **结果可查，不做断点续跑**：重启时上次未完成（pending/processing）的任务标记为 `failed`（`error: "service restarted"`），不会自动重跑。
-- **过期清理仅在服务启动时执行**：终态超过 `task_retention_days` 天的记录被删除并回收空间。
-- 历史任务通过 `GET /tasks?history=true` 与 `GET /tasks/{task_id}` 查询；`DELETE /tasks/{task_id}` 对历史任务 = 删除记录。
-- 持久化只保存文本结果与元数据，**不留存音频原件**；写入失败只告警，不影响任务执行。
-- 删除 `data/tasks.db` = 清空历史记录，不影响服务功能。如对内容留存有更严格要求，可调小 `task_retention_days` 或关闭开关。
+详见 [配置文档 · 任务持久化](docs/configuration.md#离线任务持久化tasksdb) 与 [API 文档 · 持久化行为](docs/api/v2.md#任务持久化对-api-的影响)。
 
 ### Docker 部署
 
@@ -261,22 +233,19 @@ CPU 模式：
 
 ## 启动参数
 
+常用参数速查（完整 18 项参数表见 **[配置文档](docs/configuration.md#启动参数完整表)**）：
+
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--device` | `auto` / `cuda` / `cpu` | `auto` | 运行设备，auto 自动检测 |
 | `--model-size` | `0.6b` / `1.7b` | 根据显存自动选择 | ASR 模型大小 |
-| `--enable-align` / `--no-align` | - | `--enable-align` | 是否加载对齐模型（单词级时间戳） |
-| `--use-punc` | - | 关闭 | 是否启用标点恢复 |
-| `--model-source` | `modelscope` / `huggingface` | `modelscope` | 模型下载源 |
-| `--host` | IP 地址 | `127.0.0.1` | 监听地址，设为 `0.0.0.0` 可局域网访问 |
-| `--port` | 端口号 | `8765` | 监听端口 |
-| `--web` | - | 关闭 | 启用 Web UI（访问 `/web-ui`） |
-| `--max-segment` | 秒数 | `5` | VAD 切片合并最大时长 |
-| `--api-key` | 字符串 | 无 | API 密钥，设置后启用 Bearer Token 认证（覆盖 `ASR_API_KEY` 环境变量） |
-| `--max-queue-size` | 数字 | `100` | 任务队列最大长度 |
-| `--enable-task-store` / `--no-task-store` | - | 关闭（example 生成的配置中开启） | 离线任务持久化（结果跨重启可查） |
-| `--task-db-path` | 路径 | `data/tasks.db` | 任务库路径（相对服务根目录） |
-| `--task-retention-days` | 天数 | `7` | 过期任务清理窗口，启动时执行；`0` = 永不清理 |
+| `--host` / `--port` | - | `127.0.0.1` / `8765` | 监听地址与端口 |
+| `--web` | - | 关闭 | Web UI（`/web-ui`） |
+| `--api-key` | 字符串 | 无 | API 密钥，启用 Bearer Token 认证 |
+| `--enable-stream` | - | 关闭 | 实时转写端点 `WS /v2/asr/stream` |
+| `--enable-task-store` | - | 关闭 | 离线任务持久化（结果跨重启可查） |
+
+> 由 `config.example.yaml` 生成的配置文件中，`web` / `enable_stream` / `enable_task_store` 默认均已开启。
 
 ### 三种运行模式
 
@@ -311,49 +280,23 @@ CPU 模式使用的 OpenVINO 模型：
 
 ## API 接口
 
-### 提交 ASR 任务
+完整接口文档（参数、响应结构、错误码、WebSocket 协议）见 **[API 文档 v2](docs/api/v2.md)**（默认版本）；旧客户端兼容说明见 [API 文档 v1](docs/api/v1.md)。
 
-```bash
-curl -X POST http://127.0.0.1:8765/v1/asr \
-  -F "file=@/path/to/audio.wav"
-```
+端点总览（默认地址 `http://127.0.0.1:8765`，配置 API 密钥后离线接口需 `Authorization: Bearer <key>`）：
 
-带可选参数：
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v2/asr` | POST | 提交音频转写任务（multipart 上传，最大 1GB / 4 小时），返回 `task_id` |
+| `/v2/tasks` | GET | 任务列表；`?status=` 筛选，`?history=true&limit=N` 查持久化历史 |
+| `/v2/tasks/{task_id}` | GET | 任务详情（含识别结果 `result`；开启持久化后历史任务可查） |
+| `/v2/tasks/{task_id}` | DELETE | 取消任务；对持久化库内历史任务 = 删除记录 |
+| `/v2/health` | GET | 健康检查（运行模式、模型、生效配置文件、能力摘要） |
+| `/v2/capabilities` | GET | 能力查询（离线/实时能力声明） |
+| `/v2/asr/stream` | WS | 实时语音转写（需 `--enable-stream`，协议见 [v2 文档](docs/api/v2.md#实时转写)） |
 
-```bash
-curl -X POST http://127.0.0.1:8765/v1/asr \
-  -F "file=@/path/to/audio.mp3" \
-  -F "language=zh"
-```
+> 以上接口（除 WS 外）同样以 `/v1` 前缀提供，行为一致；v1 额外保留已过时的 `GET /v1/asr/{task_id}` 别名。
 
-如果启用了 API 认证，需要在请求中携带 Bearer Token：
-
-```bash
-curl -X POST http://127.0.0.1:8765/v1/asr \
-  -H "Authorization: Bearer sk-your-key-here" \
-  -F "file=@/path/to/audio.wav"
-```
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| file | 文件 | 必填 | 音频文件（WAV/MP3/FLAC/M4A/AAC/OGG 等） |
-| language | string | null | 语言代码，null 为自动检测 |
-
-响应：
-
-```json
-{"task_id": "550e8400-e29b-41d4-a716-446655440000"}
-```
-
-**限制**：文件最大 1GB，音频时长 1s ~ 4小时。
-
-### 查询任务状态
-
-```bash
-curl http://127.0.0.1:8765/v1/tasks/{task_id}
-```
-
-响应（完成）：
+转写结果快览（`GET /v2/tasks/{task_id}` 完成时）：
 
 ```json
 {
@@ -361,131 +304,15 @@ curl http://127.0.0.1:8765/v1/tasks/{task_id}
   "status": "completed",
   "progress": 1.0,
   "result": {
-    "segments": [
-      {
-        "start": 0.0,
-        "end": 3.2,
-        "text": "甚至出现交易几乎停滞的情况。",
-        "words": [
-          {"text": "甚", "start": 0.0, "end": 0.15},
-          {"text": "至", "start": 0.15, "end": 0.30}
-        ]
-      }
-    ],
-    "full_text": "甚至出现交易几乎停滞的情况。",
-    "language": null,
+    "segments": [{"start": 0.0, "end": 3.2, "text": "...", "words": [...]}],
+    "full_text": "...",
     "align_enabled": true,
     "punc_enabled": true
-  },
-  "error": null
+  }
 }
 ```
 
-- `words` 字段仅在 `align_enabled=true` 时存在
-- 任务状态流转：`pending` → `processing` → `completed` / `failed` / `cancelled`
-- 也可使用 `GET /v1/asr/{task_id}`（已过时，功能相同）
-
-### 获取任务列表
-
-```bash
-# 获取全部任务
-curl http://127.0.0.1:8765/v1/tasks
-
-# 按状态筛选
-curl http://127.0.0.1:8765/v1/tasks?status=processing
-
-# 包含历史任务（需开启任务持久化 enable_task_store）
-curl "http://127.0.0.1:8765/v1/tasks?history=true&limit=20"
-```
-
-响应：
-
-```json
-{
-  "total": 2,
-  "tasks": [
-    {
-      "task_id": "550e8400-...",
-      "status": "completed",
-      "progress": 1.0,
-      "language": null,
-      "created_at": "2026-04-14T10:30:00",
-      "finished_at": 1744615860.0,
-      "error": null
-    },
-    {
-      "task_id": "660e8400-...",
-      "status": "processing",
-      "progress": 0.45,
-      "language": "zh",
-      "created_at": "2026-04-14T10:31:00",
-      "finished_at": null,
-      "error": null
-    }
-  ]
-}
-```
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| status | string | null | 筛选状态：`pending` / `processing` / `completed` / `failed` / `cancelled` |
-| history | bool | false | 合并持久化库中的历史任务（需开启 `enable_task_store`，否则无效果） |
-| limit | int | 50 | `history=true` 时返回的最大条数 |
-
-按创建时间倒序排列，不含识别结果。
-
-### 取消任务
-
-```bash
-curl -X DELETE http://127.0.0.1:8765/v1/tasks/{task_id}
-```
-
-响应：
-
-```json
-{"task_id": "550e8400-...", "status": "cancelled", "message": "任务已取消"}
-```
-
-取消行为：
-
-| 任务状态 | 行为 |
-|---------|------|
-| `pending` | 立即取消 |
-| `processing` | 在当前 chunk 处理完成后停止，返回已识别的部分结果 |
-| `completed` / `failed` / `cancelled` | 返回 `already_*`，不改变状态 |
-| 仅存在于持久化库的历史任务 | 删除该条记录，返回 `deleted`（需开启 `enable_task_store`） |
-
-### 健康检查
-
-```bash
-curl http://127.0.0.1:8765/v1/health
-```
-
-响应：
-
-```json
-{
-  "status": "ready",
-  "device": "cuda",
-  "model_size": "0.6b",
-  "align_enabled": true,
-  "punc_enabled": false,
-  "asr_backend": "qwen_asr",
-  "vad_backend": "pytorch",
-  "punc_backend": "pytorch"
-}
-```
-
-| 字段 | 说明 |
-|------|------|
-| status | 服务状态，`ready` 表示就绪 |
-| device | 运行设备，`cuda` 或 `cpu` |
-| model_size | ASR 模型大小，`0.6b` 或 `1.7b` |
-| align_enabled | 是否启用对齐模型（单词级时间戳） |
-| punc_enabled | 是否启用标点恢复 |
-| asr_backend | ASR 后端，`qwen_asr` 或 `openvino` |
-| vad_backend | VAD 后端，`pytorch` 或 `onnx` |
-| punc_backend | 标点后端，`pytorch`、`onnx` 或 `disabled` |
+- `words`（单词级时间戳）仅在启用对齐时存在；任务状态流转：`pending` → `processing` → `completed` / `failed` / `cancelled`。
 
 ## Web UI
 
@@ -504,6 +331,8 @@ bash start.sh --web
 - 完整文本展示
 - 原始 JSON 数据查看和下载
 
+配合 `--enable-stream` 启动时，`/web-ui/stream` 提供实时转写测试页（麦克风采集 / 音频文件模拟推流，可查看协议日志）。
+
 ## 项目结构
 
 ```
@@ -512,8 +341,11 @@ asr-service/
 │   ├── main.py                    # 服务入口（argparse 启动参数）
 │   ├── config.py                  # 全局配置
 │   ├── api/
-│   │   ├── routes.py              # FastAPI 路由
-│   │   └── schemas.py             # 请求/响应数据模型
+│   │   ├── routes.py              # 离线批处理路由（v1/v2 工厂）
+│   │   ├── common_routes.py       # health / capabilities 共性路由
+│   │   ├── ws_routes.py           # 实时转写 WebSocket 端点
+│   │   ├── schemas.py             # 请求/响应数据模型
+│   │   └── ws_schemas.py          # 实时转写信封消息模型
 │   ├── engines/
 │   │   ├── qwen_asr_engine.py     # Qwen3-ASR 识别引擎（GPU）
 │   │   ├── openvino_asr_engine.py # OpenVINO ASR 引擎（CPU）
@@ -525,12 +357,18 @@ asr-service/
 │   │   └── audio_preprocessor.py  # ffmpeg 格式转换
 │   ├── runtime/
 │   │   ├── device.py              # 设备检测与选择
-│   │   └── task_manager.py        # 任务队列管理
+│   │   ├── task_manager.py        # 任务队列管理
+│   │   ├── task_store.py          # 离线任务持久化（tasks.db）
+│   │   └── stream_session.py      # 实时转写会话（在线 VAD 分段）
 │   ├── web/
 │   │   ├── views.py               # Web UI 路由
-│   │   └── page.py                # Web UI 单页应用（HTML/CSS/JS）
+│   │   ├── page.py                # 页面加载
+│   │   ├── index.html             # 离线转写演示页
+│   │   └── stream.html            # 实时转写测试页
 │   └── utils/
 │       ├── logger.py              # 日志配置
+│       ├── arg_schema.py          # 启动参数单一 schema（argparse/配置文件共用）
+│       ├── config_file.py         # config.yaml 发现/引导生成/校验/合并
 │       ├── model_manager.py       # 模型下载管理
 │       └── openvino_model_downloader.py  # OpenVINO 模型下载
 ├── models/                        # 模型存放（自动下载，不提交 Git）

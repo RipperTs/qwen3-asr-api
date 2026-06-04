@@ -113,7 +113,7 @@ bash start.sh --host 0.0.0.0 --port 9000
 
 #### Enable API Authentication
 
-After setting an API key, all endpoints (except `/v1/health`) require a Bearer Token:
+After setting an API key, all endpoints (except `/health` and `/capabilities`) require a Bearer Token:
 
 ```bash
 # Set via startup parameter
@@ -123,6 +123,22 @@ bash start.sh --api-key sk-your-key-here
 export ASR_API_KEY=sk-your-key-here
 bash start.sh
 ```
+
+#### Config File (config.yaml)
+
+Startup parameters can also be managed in a single YAML file. The first `bash start.sh` automatically generates an editable `asr-service/config.yaml` from `config.example.yaml` and loads it:
+
+- **Priority** (low → high): built-in defaults < environment variables < config file < explicit CLI arguments.
+- Deleting `config.yaml` and restarting = resetting the configuration; `--no-config` skips it entirely.
+- Unknown keys / type errors abort startup with readable errors — typos never take effect silently.
+
+Full details (auto-discovery, validation rules, environment variables, complete parameter table): see the **[configuration reference](docs/configuration_EN.md)**.
+
+#### Offline Task Persistence (tasks.db)
+
+With `enable_task_store` on (enabled by default in configs generated from the example), task results are written to `asr-service/data/tasks.db` and **survive restarts**; unfinished tasks are marked `failed` on restart, and terminal records are kept for 7 days by default (cleaned at startup).
+
+See [configuration reference · Task Persistence](docs/configuration_EN.md#offline-task-persistence-tasksdb) and [API reference · Persistence Behavior](docs/api/v2_EN.md#how-task-persistence-affects-the-api).
 
 ### Docker Deployment
 
@@ -217,19 +233,19 @@ CPU mode:
 
 ## Startup Parameters
 
+Common parameters at a glance (full 18-parameter table: see the **[configuration reference](docs/configuration_EN.md#startup-parameters-full-table)**):
+
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
 | `--device` | `auto` / `cuda` / `cpu` | `auto` | Device, auto-detects |
 | `--model-size` | `0.6b` / `1.7b` | Auto-selected by VRAM | ASR model size |
-| `--enable-align` / `--no-align` | - | `--enable-align` | Load alignment model (word-level timestamps) |
-| `--use-punc` | - | Disabled | Enable punctuation restoration |
-| `--model-source` | `modelscope` / `huggingface` | `modelscope` | Model download source |
-| `--host` | IP address | `127.0.0.1` | Listen address, set to `0.0.0.0` for LAN access |
-| `--port` | Port number | `8765` | Listen port |
-| `--web` | - | Disabled | Enable Web UI (access at `/web-ui`) |
-| `--max-segment` | Seconds | `5` | VAD segment merge max duration |
-| `--api-key` | String | None | API key, enables Bearer Token auth when set (overrides `ASR_API_KEY` env var) |
-| `--max-queue-size` | Number | `100` | Maximum task queue size |
+| `--host` / `--port` | - | `127.0.0.1` / `8765` | Listen address and port |
+| `--web` | - | Disabled | Web UI (`/web-ui`) |
+| `--api-key` | String | None | API key, enables Bearer Token auth |
+| `--enable-stream` | - | Disabled | Real-time endpoint `WS /v2/asr/stream` |
+| `--enable-task-store` | - | Disabled | Offline task persistence (results survive restarts) |
+
+> In config files generated from `config.example.yaml`, `web` / `enable_stream` / `enable_task_store` are all enabled by default.
 
 ### Three Operation Modes
 
@@ -264,49 +280,23 @@ OpenVINO models used in CPU mode:
 
 ## API Reference
 
-### Submit ASR Task
+Full API documentation (parameters, response structures, error codes, WebSocket protocol): see the **[API reference v2](docs/api/v2_EN.md)** (default version); legacy-client notes: [API reference v1](docs/api/v1_EN.md).
 
-```bash
-curl -X POST http://127.0.0.1:8765/v1/asr \
-  -F "file=@/path/to/audio.wav"
-```
+Endpoint overview (default base URL `http://127.0.0.1:8765`; with an API key configured, offline endpoints require `Authorization: Bearer <key>`):
 
-With optional parameters:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v2/asr` | POST | Submit a transcription task (multipart upload, max 1GB / 4 hours), returns `task_id` |
+| `/v2/tasks` | GET | Task list; `?status=` filter, `?history=true&limit=N` for persisted history |
+| `/v2/tasks/{task_id}` | GET | Task detail (incl. `result`; historical tasks queryable with persistence on) |
+| `/v2/tasks/{task_id}` | DELETE | Cancel a task; for persisted historical tasks = delete the record |
+| `/v2/health` | GET | Health check (mode, models, active config file, capability summary) |
+| `/v2/capabilities` | GET | Capability declaration (offline / real-time) |
+| `/v2/asr/stream` | WS | Real-time transcription (requires `--enable-stream`, protocol: [v2 reference](docs/api/v2_EN.md#real-time-transcription)) |
 
-```bash
-curl -X POST http://127.0.0.1:8765/v1/asr \
-  -F "file=@/path/to/audio.mp3" \
-  -F "language=zh"
-```
+> All endpoints above (except WS) are also available under the `/v1` prefix with identical behavior; v1 additionally keeps the deprecated `GET /v1/asr/{task_id}` alias.
 
-If API authentication is enabled, include a Bearer Token in the request:
-
-```bash
-curl -X POST http://127.0.0.1:8765/v1/asr \
-  -H "Authorization: Bearer sk-your-key-here" \
-  -F "file=@/path/to/audio.wav"
-```
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| file | File | Required | Audio file (WAV/MP3/FLAC/M4A/AAC/OGG, etc.) |
-| language | string | null | Language code, null for auto-detection |
-
-Response:
-
-```json
-{"task_id": "550e8400-e29b-41d4-a716-446655440000"}
-```
-
-**Limits**: Maximum file size 1GB, audio duration 1s to 4 hours.
-
-### Query Task Status
-
-```bash
-curl http://127.0.0.1:8765/v1/tasks/{task_id}
-```
-
-Response (completed):
+Result at a glance (`GET /v2/tasks/{task_id}` when completed):
 
 ```json
 {
@@ -314,125 +304,15 @@ Response (completed):
   "status": "completed",
   "progress": 1.0,
   "result": {
-    "segments": [
-      {
-        "start": 0.0,
-        "end": 3.2,
-        "text": "甚至出现交易几乎停滞的情况。",
-        "words": [
-          {"text": "甚", "start": 0.0, "end": 0.15},
-          {"text": "至", "start": 0.15, "end": 0.30}
-        ]
-      }
-    ],
-    "full_text": "甚至出现交易几乎停滞的情况。",
-    "language": null,
+    "segments": [{"start": 0.0, "end": 3.2, "text": "...", "words": [...]}],
+    "full_text": "...",
     "align_enabled": true,
     "punc_enabled": true
-  },
-  "error": null
+  }
 }
 ```
 
-- The `words` field is only present when `align_enabled=true`
-- Task status flow: `pending` → `processing` → `completed` / `failed` / `cancelled`
-- Also available via `GET /v1/asr/{task_id}` (deprecated, same functionality)
-
-### List Tasks
-
-```bash
-# List all tasks
-curl http://127.0.0.1:8765/v1/tasks
-
-# Filter by status
-curl http://127.0.0.1:8765/v1/tasks?status=processing
-```
-
-Response:
-
-```json
-{
-  "total": 2,
-  "tasks": [
-    {
-      "task_id": "550e8400-...",
-      "status": "completed",
-      "progress": 1.0,
-      "language": null,
-      "created_at": "2026-04-14T10:30:00",
-      "finished_at": 1744615860.0,
-      "error": null
-    },
-    {
-      "task_id": "660e8400-...",
-      "status": "processing",
-      "progress": 0.45,
-      "language": "zh",
-      "created_at": "2026-04-14T10:31:00",
-      "finished_at": null,
-      "error": null
-    }
-  ]
-}
-```
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| status | string | null | Filter by status: `pending` / `processing` / `completed` / `failed` / `cancelled` |
-
-Tasks are sorted by creation time in descending order. Results are not included.
-
-### Cancel Task
-
-```bash
-curl -X DELETE http://127.0.0.1:8765/v1/tasks/{task_id}
-```
-
-Response:
-
-```json
-{"task_id": "550e8400-...", "status": "cancelled", "message": "任务已取消"}
-```
-
-Cancel behavior:
-
-| Task Status | Behavior |
-|-------------|----------|
-| `pending` | Cancelled immediately |
-| `processing` | Stops after current chunk completes, returns partial results |
-| `completed` / `failed` / `cancelled` | Returns `already_*`, no state change |
-
-### Health Check
-
-```bash
-curl http://127.0.0.1:8765/v1/health
-```
-
-Response:
-
-```json
-{
-  "status": "ready",
-  "device": "cuda",
-  "model_size": "0.6b",
-  "align_enabled": true,
-  "punc_enabled": false,
-  "asr_backend": "qwen_asr",
-  "vad_backend": "pytorch",
-  "punc_backend": "pytorch"
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| status | Service status, `ready` means operational |
-| device | Running device, `cuda` or `cpu` |
-| model_size | ASR model size, `0.6b` or `1.7b` |
-| align_enabled | Whether alignment model is enabled (word-level timestamps) |
-| punc_enabled | Whether punctuation restoration is enabled |
-| asr_backend | ASR backend, `qwen_asr` or `openvino` |
-| vad_backend | VAD backend, `pytorch` or `onnx` |
-| punc_backend | Punctuation backend, `pytorch`, `onnx`, or `disabled` |
+- `words` (word-level timestamps) only exists when alignment is enabled; task status flow: `pending` → `processing` → `completed` / `failed` / `cancelled`.
 
 ## Web UI
 
@@ -451,6 +331,8 @@ Access `http://<host>:<port>/web-ui` for the following features:
 - Full text display
 - Raw JSON data viewing and download
 
+When started with `--enable-stream`, `/web-ui/stream` provides a real-time transcription test page (microphone capture / simulated streaming from an audio file, with a protocol log view).
+
 ## Project Structure
 
 ```
@@ -459,8 +341,11 @@ asr-service/
 │   ├── main.py                    # Service entry point (argparse startup parameters)
 │   ├── config.py                  # Global configuration
 │   ├── api/
-│   │   ├── routes.py              # FastAPI routes
-│   │   └── schemas.py             # Request/response data models
+│   │   ├── routes.py              # Offline batch routes (v1/v2 factory)
+│   │   ├── common_routes.py       # health / capabilities shared routes
+│   │   ├── ws_routes.py           # Real-time transcription WebSocket endpoint
+│   │   ├── schemas.py             # Request/response data models
+│   │   └── ws_schemas.py          # Real-time envelope message models
 │   ├── engines/
 │   │   ├── qwen_asr_engine.py     # Qwen3-ASR recognition engine (GPU)
 │   │   ├── openvino_asr_engine.py # OpenVINO ASR engine (CPU)
@@ -472,12 +357,18 @@ asr-service/
 │   │   └── audio_preprocessor.py  # ffmpeg format conversion
 │   ├── runtime/
 │   │   ├── device.py              # Device detection and selection
-│   │   └── task_manager.py        # Task queue management
+│   │   ├── task_manager.py        # Task queue management
+│   │   ├── task_store.py          # Offline task persistence (tasks.db)
+│   │   └── stream_session.py      # Real-time session (online VAD segmentation)
 │   ├── web/
 │   │   ├── views.py               # Web UI routes
-│   │   └── page.py                # Web UI single-page app (HTML/CSS/JS)
+│   │   ├── page.py                # Page loading
+│   │   ├── index.html             # Offline transcription demo page
+│   │   └── stream.html            # Real-time transcription test page
 │   └── utils/
 │       ├── logger.py              # Logging configuration
+│       ├── arg_schema.py          # Single startup-parameter schema (argparse/config file)
+│       ├── config_file.py         # config.yaml discovery/bootstrap/validation/merge
 │       ├── model_manager.py       # Model download management
 │       └── openvino_model_downloader.py  # OpenVINO model download
 ├── models/                        # Model storage (auto-downloaded, not committed to Git)
