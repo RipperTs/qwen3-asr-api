@@ -4,15 +4,15 @@
  */
 (function () {
   'use strict';
-  const { createApp, ref, reactive, computed, watch, onMounted, onBeforeUnmount, h } = Vue;
-  const { fmtTime, fmtDate, makeRoot } = window.AsrCommon;
+  const { ref, reactive, computed, watch, onMounted, onBeforeUnmount, h } = Vue;
+  const { fmtTime, fmtDate, authHeaders, mountApp } = window.AsrCommon;
 
   const STATUS_LABELS = { pending: '排队中', processing: '处理中', completed: '已完成', failed: '失败', cancelled: '已取消' };
   const STATUS_TAG_TYPES = { pending: 'warning', processing: 'info', completed: 'success', failed: 'error', cancelled: 'default' };
   const POLL_ACTIVE_MS = 3000;   // 列表含进行中任务时的刷新间隔
   const POLL_IDLE_MS = 30000;    // 全终态时的低频刷新（外部客户端新建任务也能感知）
 
-  /* 结果展示（分段 + 全文 + JSON），当前任务与历史查看弹窗复用；onSeek 仅当前任务传入 */
+  /* 结果展示（分段时间轴 + 全文/JSON 折叠），当前任务与历史查看弹窗复用；onSeek 仅当前任务传入 */
   const ResultView = {
     props: { data: { type: Object, required: true }, onSeek: { type: Function, default: null } },
     setup(props) {
@@ -26,7 +26,6 @@
         if (r.duration != null) tags.push('时长: ' + r.duration.toFixed(1) + 's');
         return tags;
       });
-      const showJson = ref(false);
       const jsonText = computed(() => JSON.stringify(props.data, null, 2));
       function downloadJson() {
         const blob = new Blob([jsonText.value], { type: 'application/json' });
@@ -37,45 +36,41 @@
         URL.revokeObjectURL(a.href);
       }
       function seek(seg) { if (props.onSeek && seg.start != null) props.onSeek(seg); }
-      return { result, segments, metaTags, showJson, jsonText, downloadJson, seek, fmtTime };
+      return { result, segments, metaTags, jsonText, downloadJson, seek, fmtTime };
     },
     template: `
       <div>
-        <n-space v-if="metaTags.length" size="small" style="margin-bottom:10px;">
+        <n-space v-if="metaTags.length" size="small" style="margin-bottom:14px;">
           <n-tag v-for="t in metaTags" :key="t" size="small" :bordered="false">{{ t }}</n-tag>
         </n-space>
-        <n-h3 prefix="bar" style="margin:6px 0;">分段结果</n-h3>
+        <div class="sec-title">分段结果</div>
         <n-empty v-if="!segments.length" description="无分段数据" size="small" style="margin:12px 0;"></n-empty>
-        <div v-for="(seg, i) in segments" :key="i" class="segment-card" :style="onSeek ? '' : 'cursor:default;'" @click="seek(seg)">
-          <span class="segment-time">[{{ fmtTime(seg.start) }} - {{ fmtTime(seg.end) }}]</span>
-          <span>{{ seg.text }}</span>
+        <div v-else>
+          <div v-for="(seg, i) in segments" :key="i" class="seg-row" :class="{ static: !onSeek }" @click="seek(seg)">
+            <span class="seg-time">{{ fmtTime(seg.start) }}</span>
+            <span class="seg-text">{{ seg.text }}</span>
+            <span v-if="onSeek" class="seg-play"><a-icon name="play" size="14"></a-icon></span>
+          </div>
         </div>
-        <n-h3 prefix="bar" style="margin:16px 0 6px;">完整文本</n-h3>
-        <n-card size="small" :bordered="true"><div class="full-text">{{ result.full_text || '' }}</div></n-card>
-        <n-h3 prefix="bar" style="margin:16px 0 6px;">原始数据</n-h3>
-        <n-space size="small">
-          <n-button size="small" tertiary @click="showJson = !showJson">{{ showJson ? '收起 JSON' : '展开 JSON' }}</n-button>
-          <n-button size="small" tertiary type="primary" @click="downloadJson">下载 JSON</n-button>
-        </n-space>
-        <pre v-if="showJson" class="json-pre" style="margin-top:8px;">{{ jsonText }}</pre>
+        <n-collapse :default-expanded-names="['full']" style="margin-top:18px;">
+          <n-collapse-item title="完整文本" name="full">
+            <div class="full-text">{{ result.full_text || '' }}</div>
+          </n-collapse-item>
+          <n-collapse-item title="原始 JSON" name="json">
+            <template #header-extra>
+              <n-button size="tiny" tertiary @click.stop="downloadJson">下载 JSON</n-button>
+            </template>
+            <pre class="json-pre">{{ jsonText }}</pre>
+          </n-collapse-item>
+        </n-collapse>
       </div>`,
   };
 
   const AppBody = {
     components: { 'result-view': ResultView },
-    props: { themeMode: { type: String, required: true } },
-    emits: ['cycle-theme'],
-    setup(props, { emit }) {
+    setup() {
       const message = naive.useMessage();
       const dialog = naive.useDialog();
-
-      // —— API Key（localStorage 记忆）——
-      const apiKey = ref(localStorage.getItem('asr_api_key') || '');
-      watch(apiKey, v => localStorage.setItem('asr_api_key', v.trim()));
-      const authHeaders = () => {
-        const k = apiKey.value.trim();
-        return k ? { Authorization: 'Bearer ' + k } : {};
-      };
 
       // —— 文件选择 ——
       const audioRef = ref(null);
@@ -98,8 +93,8 @@
           audioSrc.value = '';
         }
       }
-      const fileLabel = computed(() =>
-        selectedFile.value ? `${selectedFile.value.name} (${(selectedFile.value.size / 1024 / 1024).toFixed(2)} MB)` : ''
+      const fileSize = computed(() =>
+        selectedFile.value ? (selectedFile.value.size / 1024 / 1024).toFixed(2) + ' MB' : ''
       );
 
       // —— 当前任务 ——
@@ -324,67 +319,71 @@
       ];
       const rowProps = row => ({ style: 'cursor: pointer;', onClick: () => viewTask(row) });
 
-      const themeLabel = computed(() => ({ auto: '🌗 跟随系统', light: '☀️ 浅色', dark: '🌙 深色' }[props.themeMode]));
-
       return {
-        apiKey, themeLabel,
-        uploadFileList, onUploadChange, fileLabel, audioSrc, audioRef, selectedFile,
+        uploadFileList, onUploadChange, fileSize, audioSrc, audioRef, selectedFile,
         current, progressPct, submit, cancelTask, seekAudio,
         taskList, toggleTaskList, manualRefresh, filterOptions, columns, rowProps,
         viewer,
-        cycleTheme: () => emit('cycle-theme'),
       };
     },
     template: `
       <div>
-        <n-space justify="center" align="center" style="margin-bottom:16px;">
-          <n-input v-model:value="apiKey" type="password" show-password-on="click" placeholder="API Key（留空表示无需认证）" size="small" style="width:280px;"></n-input>
-          <n-button size="small" quaternary @click="cycleTheme">{{ themeLabel }}</n-button>
-        </n-space>
-
-        <div class="page-body">
+        <div class="workspace">
           <div class="side-col">
-            <n-card title="📁 上传音频" size="small">
+            <n-card :bordered="false" class="panel" size="small">
+              <template #header><span class="panel-title"><a-icon name="upload" size="15"></a-icon>上传音频</span></template>
               <n-upload :file-list="uploadFileList" :default-upload="false" :max="1" :show-file-list="false"
                         accept=".wav,.mp3,.flac,.m4a,.aac,.ogg,.wma,.amr,.opus" @change="onUploadChange">
                 <n-upload-dragger>
-                  <div style="font-size:2em;">💾</div>
-                  <n-text style="font-size:0.95em;font-weight:600;">点击或拖拽上传音频文件</n-text>
-                  <n-p depth="3" style="font-size:0.8em;margin:6px 0 0;">支持 wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus</n-p>
+                  <div style="color:#14b8a6;margin-bottom:8px;"><a-icon name="upload" size="30"></a-icon></div>
+                  <n-text style="font-size:.92em;font-weight:600;">点击或拖拽上传音频文件</n-text>
+                  <n-p depth="3" style="font-size:.76em;margin:6px 0 0;">wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus</n-p>
                 </n-upload-dragger>
               </n-upload>
               <template v-if="selectedFile">
-                <n-text depth="2" style="display:block;margin-top:10px;font-size:0.88em;">{{ fileLabel }}</n-text>
+                <div class="file-meta">
+                  <a-icon name="file" size="14"></a-icon>
+                  <span class="file-name" :title="selectedFile.name">{{ selectedFile.name }}</span>
+                  <n-tag size="tiny" :bordered="false">{{ fileSize }}</n-tag>
+                </div>
                 <audio ref="audioRef" class="audio-box" controls :src="audioSrc"></audio>
-                <n-button type="primary" block style="margin-top:12px;" :disabled="current.phase === 'submitting' || current.phase === 'running'" @click="submit">
-                  {{ current.phase === 'running' || current.phase === 'submitting' ? '识别中...' : '开始识别' }}
+                <n-button type="primary" size="large" block strong style="margin-top:14px;"
+                          :loading="current.phase === 'submitting'"
+                          :disabled="current.phase === 'submitting' || current.phase === 'running'" @click="submit">
+                  {{ current.phase === 'running' || current.phase === 'submitting' ? '识别中…' : '开始识别' }}
                 </n-button>
               </template>
             </n-card>
           </div>
 
           <div class="main-col">
-            <n-card size="small" :title="current.phase === 'running' || current.phase === 'submitting' ? '🔄 识别中...' : '📊 识别结果'">
+            <n-card :bordered="false" class="panel" size="small">
+              <template #header><span class="panel-title"><a-icon name="doc" size="15"></a-icon>识别结果</span></template>
+              <template #header-extra>
+                <n-button v-if="current.phase === 'running' || current.phase === 'submitting'" size="small" type="error" tertiary
+                          :disabled="current.cancelling || !current.taskId" @click="cancelTask">
+                  {{ current.cancelling ? '取消中…' : '取消识别' }}
+                </n-button>
+              </template>
               <template v-if="current.phase === 'submitting' || current.phase === 'running'">
-                <n-progress type="line" :percentage="progressPct" :indicator-placement="'inside'" processing></n-progress>
-                <n-space justify="space-between" align="center" style="margin-top:10px;">
-                  <n-text depth="3" style="font-size:0.88em;">{{ current.phase === 'submitting' ? '上传中...' : '识别中... ' + progressPct + '%' }}</n-text>
-                  <n-button size="small" type="error" tertiary :disabled="current.cancelling || !current.taskId" @click="cancelTask">
-                    {{ current.cancelling ? '取消中...' : '取消识别' }}
-                  </n-button>
-                </n-space>
+                <n-progress type="line" :percentage="progressPct" :height="8" :border-radius="4" :show-indicator="false" processing></n-progress>
+                <n-text depth="3" style="display:block;margin-top:8px;font-size:.84em;font-variant-numeric:tabular-nums;">
+                  {{ current.phase === 'submitting' ? '上传中…' : '识别中 ' + progressPct + '%' }}
+                </n-text>
+                <n-skeleton text :repeat="3" style="margin-top:18px;"></n-skeleton>
               </template>
               <n-alert v-else-if="current.phase === 'error'" type="error" :show-icon="true" title="识别失败">{{ current.error }}</n-alert>
               <result-view v-else-if="current.phase === 'done' && current.data" :data="current.data" :on-seek="seekAudio"></result-view>
-              <n-empty v-else description="上传音频并开始识别" style="margin:32px 0;"></n-empty>
+              <n-empty v-else description="上传音频并开始识别" style="margin:48px 0;"></n-empty>
             </n-card>
           </div>
         </div>
 
-        <n-card size="small" style="margin-top:16px;">
+        <n-card :bordered="false" class="panel" size="small" style="margin-top:20px;">
           <n-space justify="space-between" align="center">
-            <n-button text style="font-size:1em;font-weight:600;" @click="toggleTaskList">
-              📋 任务列表 {{ taskList.open ? '▲' : '▼' }}
+            <n-button text style="font-size:.95em;font-weight:600;" @click="toggleTaskList">
+              <a-icon name="list" size="15" style="margin-right:7px;color:#14b8a6;"></a-icon>任务历史
+              <a-icon name="chev" size="13" :style="{ marginLeft: '7px', transition: 'transform .2s', transform: taskList.open ? 'rotate(180deg)' : 'none' }"></a-icon>
             </n-button>
             <n-space v-if="taskList.open" size="small" align="center">
               <n-select v-model:value="taskList.filter" :options="filterOptions" size="small" style="width:110px;"></n-select>
@@ -393,8 +392,8 @@
           </n-space>
           <template v-if="taskList.open">
             <n-data-table :columns="columns" :data="taskList.rows" :row-props="rowProps" :loading="taskList.loading && !taskList.loaded"
-                          :row-key="row => row.task_id" size="small" style="margin-top:12px;"></n-data-table>
-            <n-text v-if="taskList.loaded" depth="3" style="display:block;margin-top:8px;font-size:0.78em;">
+                          :row-key="row => row.task_id" :scroll-x="680" size="small" style="margin-top:12px;"></n-data-table>
+            <n-text v-if="taskList.loaded" depth="3" class="poll-note">
               列表自动刷新：进行中任务每 3 秒，空闲每 30 秒；含持久化历史记录
             </n-text>
           </template>
@@ -419,5 +418,5 @@
       </div>`,
   };
 
-  createApp(makeRoot(AppBody)).use(naive).mount('#app');
+  mountApp(AppBody);
 })();

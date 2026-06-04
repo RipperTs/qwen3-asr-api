@@ -48,6 +48,12 @@ def test_page_scripts_served(client, name):
     assert "javascript" in resp.headers["content-type"]
 
 
+def test_app_css_served(client):
+    resp = client.get("/web-ui/assets/app.css")
+    assert resp.status_code == 200
+    assert "text/css" in resp.headers["content-type"]
+
+
 def test_gzip_applied_to_large_asset(client):
     resp = client.get(
         "/web-ui/assets/vendor/naive-ui-2.44.1.prod.js",

@@ -26,6 +26,7 @@ def test_web_ui_offline_page():
     # vendor 与页面脚本引用
     assert "vue-3.5.35.global.prod.js" in html
     assert "naive-ui-2.44.1.prod.js" in html
+    assert "/web-ui/assets/app.css" in html
     assert "/web-ui/assets/common.js" in html
     assert "/web-ui/assets/offline.js" in html
 
@@ -39,6 +40,7 @@ def test_web_ui_stream_page():
     assert 'id="app"' in html
     assert "vue-3.5.35.global.prod.js" in html
     assert "naive-ui-2.44.1.prod.js" in html
+    assert "/web-ui/assets/app.css" in html
     assert "/web-ui/assets/common.js" in html
     assert "/web-ui/assets/stream.js" in html
 

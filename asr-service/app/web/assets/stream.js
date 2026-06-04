@@ -5,8 +5,8 @@
  */
 (function () {
   'use strict';
-  const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount } = Vue;
-  const { fmtMs, makeRoot } = window.AsrCommon;
+  const { ref, reactive, computed, onMounted, onBeforeUnmount } = Vue;
+  const { fmtMs, apiKey, mountApp } = window.AsrCommon;
 
   const RT_SR = 16000;
   const FRAME = 3200;                 // 200ms @16k
@@ -39,21 +39,12 @@
   }
 
   const AppBody = {
-    props: { themeMode: { type: String, required: true } },
-    emits: ['cycle-theme'],
-    setup(props, { emit }) {
-      // —— 连接配置（API Key 与离线页共用 localStorage 键）——
-      const token = ref(localStorage.getItem('asr_api_key') || '');
-      Vue.watch(token, v => localStorage.setItem('asr_api_key', v.trim()));
+    setup() {
       const lang = ref('');
 
       // —— 会话状态机：idle | connecting | streaming | stopping ——
       const streamState = ref('idle');
       const statusText = ref('未连接');
-      const statusType = computed(() => (
-        streamState.value === 'streaming' ? 'error'                       // 红点=录制/推流中
-          : streamState.value === 'idle' ? 'default' : 'warning'
-      ));
       const source = ref('mic');          // mic | file
       const busy = computed(() => streamState.value !== 'idle');
 
@@ -85,11 +76,12 @@
         Vue.nextTick(() => { const el = logRef.value; if (el) el.scrollTop = el.scrollHeight; });
       }
 
-      // —— 诊断（发送/接收速率、WS 缓冲、最大帧、主线程卡顿）——
-      const diagText = ref('');
+      // —— 诊断指标（n-statistic 横排：发送/接收速率、WS 缓冲、最大帧、主线程卡顿）——
+      const diag = reactive({ on: false, sent: 0, recv: 0, buf: 0, frame: 0, stall: 0 });
       let diagTimer = null, rafId = null, sentFrames = 0, recvMsgs = 0, lastRaf = 0, maxStall = 0, maxFrame = 0;
       function startDiag() {
         sentFrames = 0; recvMsgs = 0; maxStall = 0; lastRaf = 0; maxFrame = 0;
+        diag.on = true;
         const tick = now => {
           if (lastRaf) { const gap = now - lastRaf; if (gap > maxStall) maxStall = gap; }
           lastRaf = now;
@@ -97,15 +89,42 @@
         };
         rafId = requestAnimationFrame(tick);
         diagTimer = setInterval(() => {
-          const buf = ws ? ws.bufferedAmount : 0;
-          diagText.value = '诊断 · 发送 ' + sentFrames + ' 帧/s · 接收 ' + recvMsgs + ' 条/s · WS缓冲 ' +
-            Math.round(buf / 1024) + ' KB · 最大帧 ' + maxFrame + ' 样本 · 主线程最大卡顿 ' + Math.round(maxStall) + ' ms';
+          diag.sent = sentFrames; diag.recv = recvMsgs;
+          diag.buf = Math.round((ws ? ws.bufferedAmount : 0) / 1024);
+          diag.frame = maxFrame; diag.stall = Math.round(maxStall);
           sentFrames = 0; recvMsgs = 0; maxStall = 0; maxFrame = 0;
         }, 1000);
       }
       function stopDiag() {
         if (diagTimer) { clearInterval(diagTimer); diagTimer = null; }
         if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      }
+
+      // —— VU 电平表（麦克风 RMS 包络，rAF 绘制 + 指数衰减）——
+      const vuRef = ref(null);
+      let vuRaf = null, vuLevel = 0;
+      function drawVu() {
+        const cv = vuRef.value;
+        if (cv) {
+          const ctx = cv.getContext('2d'), w = cv.width, hgt = cv.height;
+          ctx.clearRect(0, 0, w, hgt);
+          const lvl = Math.min(1, vuLevel * 4);
+          if (lvl > 0.004) {
+            const grd = ctx.createLinearGradient(0, 0, w, 0);
+            grd.addColorStop(0, '#14b8a6'); grd.addColorStop(0.72, '#f59e0b'); grd.addColorStop(1, '#ef4444');
+            ctx.fillStyle = grd;
+            ctx.fillRect(0, 0, w * lvl, hgt);
+          }
+          vuLevel *= 0.86;
+        }
+        vuRaf = requestAnimationFrame(drawVu);
+      }
+      function startVu() { if (!vuRaf) drawVu(); }
+      function stopVu() {
+        if (vuRaf) { cancelAnimationFrame(vuRaf); vuRaf = null; }
+        vuLevel = 0;
+        const cv = vuRef.value;
+        if (cv) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
       }
 
       // —— WebSocket ——
@@ -130,11 +149,11 @@
       function openWs(onReady) {
         hint.value = '';
         clearResults();
-        const t = token.value.trim();
+        const t = apiKey.value.trim();
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         const url = proto + '://' + location.host + '/v2/asr/stream' + (t ? '?token=' + encodeURIComponent(t) : '');
         streamState.value = 'connecting';
-        statusText.value = '连接中...';
+        statusText.value = '连接中…';
         ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
         ws.onopen = () => log('evt', 'WS open');
@@ -199,26 +218,34 @@
           micNode = new AudioWorkletNode(micCtx, 'pcm-worklet');
           micNode.port.onmessage = ev => {
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            if (ev.data.length > maxFrame) maxFrame = ev.data.length;
+            const d = ev.data;
+            if (d.length > maxFrame) maxFrame = d.length;
+            // VU：抽样计算 RMS 包络（1/4 采样足够）
+            let s = 0;
+            for (let i = 0; i < d.length; i += 4) s += d[i] * d[i];
+            const rms = Math.sqrt(s / Math.ceil(d.length / 4));
+            if (rms > vuLevel) vuLevel = rms;
             if (ws.bufferedAmount > BP_LIMIT) return;   // 背压丢帧
-            ws.send(micFloatTo16kPCM(ev.data, micCtx.sampleRate).buffer);
+            ws.send(micFloatTo16kPCM(d, micCtx.sampleRate).buffer);
             sentFrames++;
           };
           // worklet 不写 output → 输出静音；连 destination 仅为驱动音频图
           micSrc.connect(micNode);
           micNode.connect(micCtx.destination);
           startDiag();
-          statusText.value = '🔴 录音中...';
+          startVu();
+          statusText.value = '录音中…';
         });
       }
       function stopMic() {
         streamState.value = 'stopping';
         wsSendJson({ type: 'stop' });
         cleanupMic();
-        statusText.value = '已停止，等待末段结果...';
+        statusText.value = '已停止，等待末段结果…';
       }
       function cleanupMic() {
         stopDiag();
+        stopVu();
         try { if (micNode) { micNode.port.onmessage = null; micNode.disconnect(); micNode = null; } } catch (e) { /* noop */ }
         try { if (micSrc) { micSrc.disconnect(); micSrc = null; } } catch (e) { /* noop */ }
         try { if (micCtx) { micCtx.close(); micCtx = null; } } catch (e) { /* noop */ }
@@ -286,15 +313,10 @@
 
       // —— 文件模拟推流 ——
       const fileInputRef = ref(null);
-      const fileChosen = ref('');
       const noThrottle = ref(false);
       const fileProgress = ref(0);
       const fileRunning = ref(false);
       let fileAborted = false;
-      function onFileChange() {
-        const el = fileInputRef.value;
-        fileChosen.value = el && el.files.length ? el.files[0].name : '';
-      }
       async function startFile() {
         hint.value = '';
         const el = fileInputRef.value;
@@ -317,7 +339,7 @@
 
         openWs(async () => {
           wsSendJson(startMsg());
-          statusText.value = '📤 推流中...';
+          statusText.value = '推流中…';
           startDiag();
           const total = pcm16.length;
           const frameMs = FRAME / RT_SR * 1000;   // 200ms
@@ -333,7 +355,7 @@
           fileProgress.value = 100;
           streamState.value = 'stopping';
           wsSendJson({ type: 'stop' });
-          statusText.value = '推流完成，等待末段结果...';
+          statusText.value = '推流完成，等待末段结果…';
           fileRunning.value = false;
         });
       }
@@ -361,76 +383,94 @@
       onMounted(precheck);
       onBeforeUnmount(() => { cleanupMic(); closeWs(); stopDiag(); });
 
-      const themeLabel = computed(() => ({ auto: '🌗 跟随系统', light: '☀️ 浅色', dark: '🌙 深色' }[props.themeMode]));
-
       return {
-        token, lang, themeLabel,
-        streamState, statusText, statusType, busy, source,
-        capWarning, hint, capInfo, diagText,
+        lang,
+        streamState, statusText, busy, source,
+        capWarning, hint, capInfo, diag, vuRef,
         finals, partial, fmtMs,
         logs, logOpen, logRef,
-        fileInputRef, fileChosen, noThrottle, fileProgress, fileRunning, onFileChange,
+        fileInputRef, noThrottle, fileProgress, fileRunning,
         startMic, stopMic, startFile, stopFile,
-        cycleTheme: () => emit('cycle-theme'),
       };
     },
     template: `
       <div>
-        <n-alert v-if="capWarning" type="warning" :show-icon="true" style="margin-bottom:12px;">{{ capWarning }}</n-alert>
+        <n-alert v-if="capWarning" type="warning" :show-icon="true" style="margin-bottom:16px;">{{ capWarning }}</n-alert>
 
-        <n-card title="⚙️ 连接" size="small" style="margin-bottom:14px;">
-          <template #header-extra>
-            <n-button size="small" quaternary @click="cycleTheme">{{ themeLabel }}</n-button>
-          </template>
-          <n-space align="center" :wrap="true">
-            <n-input v-model:value="token" type="password" show-password-on="click" placeholder="API Key（留空表示无需认证）" size="small" style="width:260px;"></n-input>
-            <n-input v-model:value="lang" placeholder="语言（默认 auto）" size="small" style="width:140px;"></n-input>
-            <n-tag :type="statusType" :bordered="false" size="small">{{ statusText }}</n-tag>
-          </n-space>
-          <n-text v-if="diagText" depth="3" style="display:block;margin-top:8px;font-size:0.78em;">{{ diagText }}</n-text>
-          <n-text v-if="capInfo" depth="3" style="display:block;margin-top:4px;font-size:0.78em;">{{ capInfo }}</n-text>
-        </n-card>
-
-        <n-card size="small" style="margin-bottom:14px;">
-          <n-tabs v-model:value="source" type="segment" size="small">
-            <n-tab-pane name="mic" tab="🎤 麦克风" :disabled="busy && source !== 'mic'">
-              <n-space align="center" style="margin-top:8px;">
-                <n-button v-if="!busy" id="micStart" type="primary" @click="startMic">开始录音</n-button>
-                <n-button v-else type="error" :disabled="streamState === 'stopping'" @click="stopMic">停止</n-button>
-                <n-text depth="3" style="font-size:0.85em;">点击后授权麦克风，边说边转写。</n-text>
-              </n-space>
-            </n-tab-pane>
-            <n-tab-pane name="file" tab="📁 文件模拟" :disabled="busy && source !== 'file'">
-              <n-space vertical style="margin-top:8px;">
-                <input id="fileInput" ref="fileInputRef" type="file" accept="audio/*" @change="onFileChange">
-                <n-space align="center">
-                  <n-button v-if="!busy && !fileRunning" type="primary" @click="startFile">开始模拟推流</n-button>
-                  <n-button v-else type="error" :disabled="streamState === 'stopping'" @click="stopFile">停止</n-button>
-                  <n-checkbox v-model:checked="noThrottle">⚡ 不限速（尽快推送）</n-checkbox>
-                </n-space>
-                <n-text depth="3" style="font-size:0.8em;">
-                  点击后按需加载 ffmpeg-wasm 解码（需外网，首次约 25–30MB，仅本次会话加载一次；加载失败自动回退浏览器原生解码）→ 转 16k 单声道 → 按 200ms 分帧推流，模拟实时输入。
-                </n-text>
-                <n-progress v-if="fileRunning || fileProgress > 0" type="line" :percentage="fileProgress" :indicator-placement="'inside'"></n-progress>
-              </n-space>
-            </n-tab-pane>
-          </n-tabs>
-          <n-alert v-if="hint" type="error" :show-icon="true" style="margin-top:10px;">{{ hint }}</n-alert>
-        </n-card>
-
-        <n-card title="📝 转写结果" size="small" style="margin-bottom:14px;">
-          <div id="transcript">
-            <n-empty v-if="!finals.length && !partial" description="等待音频输入..." size="small" style="margin:16px 0;"></n-empty>
-            <div v-for="line in finals" :key="line.key" class="transcript-line">
-              <span class="t" v-if="line.start != null">[{{ fmtMs(line.start) }}]</span>{{ line.text }}<n-text v-if="line.words" depth="3" style="font-size:0.8em;"> ({{ line.words }} 词)</n-text>
+        <n-card :bordered="false" class="panel" size="small" style="margin-bottom:20px;">
+          <div class="console-row">
+            <span class="status-pill" :class="streamState"><span class="dot"></span>{{ statusText }}</span>
+            <div v-if="diag.on" class="diag-row">
+              <n-statistic label="发送速率" :value="diag.sent"><template #suffix><span class="diag-unit">帧/s</span></template></n-statistic>
+              <n-statistic label="接收速率" :value="diag.recv"><template #suffix><span class="diag-unit">条/s</span></template></n-statistic>
+              <n-statistic label="发送缓冲" :value="diag.buf"><template #suffix><span class="diag-unit">KB</span></template></n-statistic>
+              <n-statistic label="最大帧" :value="diag.frame"><template #suffix><span class="diag-unit">样本</span></template></n-statistic>
+              <n-statistic label="主线程卡顿" :value="diag.stall"><template #suffix><span class="diag-unit">ms</span></template></n-statistic>
             </div>
           </div>
-          <n-text v-if="partial" italic depth="2" style="display:block;margin-top:6px;">{{ partial }}</n-text>
+          <n-text v-if="capInfo" depth="3" style="display:block;margin-top:10px;font-size:.76em;">{{ capInfo }}</n-text>
         </n-card>
 
-        <n-card size="small">
+        <div class="workspace">
+          <div class="side-col">
+            <n-card :bordered="false" class="panel" size="small">
+              <template #header><span class="panel-title"><a-icon name="mic" size="15"></a-icon>输入源</span></template>
+              <n-input v-model:value="lang" size="small" placeholder="语言（默认 auto，如 zh / en）" style="margin-bottom:12px;"></n-input>
+              <n-tabs v-model:value="source" type="segment" size="small">
+                <n-tab-pane name="mic" tab="麦克风" :disabled="busy && source !== 'mic'">
+                  <n-space vertical size="large" style="margin-top:12px;">
+                    <n-button v-if="!busy" id="micStart" type="primary" size="large" block strong @click="startMic">
+                      <a-icon name="mic" size="15" style="margin-right:7px;"></a-icon>开始录音
+                    </n-button>
+                    <n-button v-else type="error" size="large" block strong :disabled="streamState === 'stopping'" @click="stopMic">
+                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>停止录音
+                    </n-button>
+                    <canvas ref="vuRef" class="vu-canvas" width="300" height="12"></canvas>
+                    <n-text depth="3" style="font-size:.78em;">点击后授权麦克风，边说边转写。</n-text>
+                  </n-space>
+                </n-tab-pane>
+                <n-tab-pane name="file" tab="文件模拟" :disabled="busy && source !== 'file'">
+                  <n-space vertical size="medium" style="margin-top:12px;">
+                    <input id="fileInput" ref="fileInputRef" type="file" accept="audio/*" class="file-input">
+                    <n-checkbox v-model:checked="noThrottle" size="small">不限速（尽快推送）</n-checkbox>
+                    <n-button v-if="!busy && !fileRunning" type="primary" size="large" block strong @click="startFile">
+                      <a-icon name="play" size="15" style="margin-right:7px;"></a-icon>开始模拟推流
+                    </n-button>
+                    <n-button v-else type="error" size="large" block strong :disabled="streamState === 'stopping'" @click="stopFile">
+                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>停止
+                    </n-button>
+                    <n-progress v-if="fileRunning || fileProgress > 0" type="line" :percentage="fileProgress" :height="8" :border-radius="4" :show-indicator="false"></n-progress>
+                    <n-text depth="3" style="font-size:.74em;line-height:1.6;">
+                      按需加载 ffmpeg-wasm 解码（需外网，首次约 25–30MB，仅本次会话加载一次；失败自动回退浏览器原生解码）→ 转 16k 单声道 → 200ms 分帧推流，模拟实时输入。
+                    </n-text>
+                  </n-space>
+                </n-tab-pane>
+              </n-tabs>
+              <n-alert v-if="hint" type="error" :show-icon="true" style="margin-top:12px;">{{ hint }}</n-alert>
+            </n-card>
+          </div>
+
+          <div class="main-col">
+            <n-card :bordered="false" class="panel" size="small">
+              <template #header><span class="panel-title"><a-icon name="doc" size="15"></a-icon>转写结果</span></template>
+              <div id="transcript">
+                <n-empty v-if="!finals.length && !partial" description="等待音频输入…" size="small" style="margin:24px 0;"></n-empty>
+                <div v-for="line in finals" :key="line.key" class="transcript-line">
+                  <span class="t">{{ line.start != null ? fmtMs(line.start) : '' }}</span>
+                  <span class="tx">{{ line.text }}<n-text v-if="line.words" depth="3" style="font-size:.78em;"> ({{ line.words }} 词)</n-text></span>
+                </div>
+                <div v-if="partial" class="partial-line">{{ partial }}<span class="cursor-blk"></span></div>
+              </div>
+            </n-card>
+          </div>
+        </div>
+
+        <n-card :bordered="false" class="panel" size="small" style="margin-top:20px;">
           <n-space justify="space-between" align="center">
-            <n-button text style="font-size:1em;font-weight:600;" @click="logOpen = !logOpen">🧾 协议日志 {{ logOpen ? '▲' : '▼' }}</n-button>
+            <n-button text style="font-size:.95em;font-weight:600;" @click="logOpen = !logOpen">
+              <a-icon name="doc" size="15" style="margin-right:7px;color:#14b8a6;"></a-icon>协议日志
+              <a-icon name="chev" size="13" :style="{ marginLeft: '7px', transition: 'transform .2s', transform: logOpen ? 'rotate(180deg)' : 'none' }"></a-icon>
+            </n-button>
             <n-button v-if="logOpen" size="tiny" tertiary @click="logs.length = 0">清空</n-button>
           </n-space>
           <div v-if="logOpen" ref="logRef" class="proto-log" style="margin-top:10px;">
@@ -441,5 +481,5 @@
       </div>`,
   };
 
-  createApp(makeRoot(AppBody)).use(naive).mount('#app');
+  mountApp(AppBody);
 })();
