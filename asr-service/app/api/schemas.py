@@ -34,12 +34,30 @@ class CancelResponse(BaseModel):
     message: str
 
 
+class StreamCapabilities(BaseModel):
+    enabled: bool = False
+    backend: str | None = None        # "vad-offline" | "vllm-native"
+    path: str | None = None           # "/v2/asr/stream"（统一端点）
+    partial_results: bool = False
+    word_timestamps: bool = False
+
+
+class CapabilitiesResponse(BaseModel):
+    mode: str                          # "standard" | "vllm"
+    offline_api: bool
+    stream: StreamCapabilities
+
+
 class HealthResponse(BaseModel):
-    status: str             # "ready" | "loading" | "error"
-    device: str             # "cuda" | "cpu"
-    model_size: str         # "0.6b" | "1.7b"
-    align_enabled: bool
-    punc_enabled: bool
-    asr_backend: str        # "qwen_asr" | "openvino"
-    vad_backend: str        # "pytorch" | "onnx"
-    punc_backend: str       # "pytorch" | "onnx"
+    """健康检查响应（mode-aware）。仅新增字段/放宽为可选，向后兼容：
+    standard 模式响应与原有字段一致，vllm 模式不适用字段为 null。"""
+    status: str                        # "ready" | "loading" | "error"
+    mode: str = "standard"             # 当前运行模式："standard" | "vllm"
+    device: str                        # "cuda" | "cpu"
+    model_size: str | None = None      # "0.6b" | "1.7b"
+    align_enabled: bool = False
+    punc_enabled: bool = False
+    asr_backend: str | None = None     # "qwen_asr" | "openvino"
+    vad_backend: str | None = None     # "pytorch" | "onnx"
+    punc_backend: str | None = None    # "pytorch" | "onnx"
+    capabilities: CapabilitiesResponse | None = None

@@ -1,4 +1,5 @@
 import logging
+import threading
 from funasr import AutoModel
 from app.utils.model_manager import ensure_model_modelscope
 from app.config import MODEL_LOCAL_MAP, MODELSCOPE_ONLY_REPO_MAP
@@ -14,6 +15,9 @@ class VADEngine:
     def __init__(self):
         self._model_key = "vad"
         self._model = None
+        # funasr AutoModel.generate 非线程安全：离线 detect 与在线流式
+        # （StreamingVADEngine）共用同一模型实例，必须共用此推理锁
+        self._infer_lock = threading.Lock()
 
     def load(self):
         local_dir = MODEL_LOCAL_MAP[self._model_key]
@@ -38,7 +42,8 @@ class VADEngine:
         if self._model is None:
             raise RuntimeError("VAD 模型未加载，请先调用 load()")
 
-        res = self._model.generate(input=audio_path)
+        with self._infer_lock:
+            res = self._model.generate(input=audio_path)
 
         segments = []
         if res and len(res) > 0 and res[0]:

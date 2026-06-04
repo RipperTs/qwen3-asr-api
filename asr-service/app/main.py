@@ -13,13 +13,19 @@ from app.engines.vad_engine import VADEngine
 from app.engines.punc_engine import PuncEngine
 from app.pipeline.audio_preprocessor import check_ffmpeg
 from app.pipeline.asr_pipeline import ASRPipeline
-from app.api.routes import router, init_routes
+from app.api.routes import init_routes, build_offline_router
+from app.api.common_routes import init_common, build_common_router
 
 logger = logging.getLogger(__name__)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Qwen3-ASR Service")
+    parser.add_argument(
+        "--serve-mode", dest="serve_mode", choices=["standard", "vllm"], default="standard",
+        help="服务运行模式：standard=transformers/OpenVINO 离线+实时(路线B)；"
+             "vllm=vLLM 原生流式(Phase 3) (default: standard)",
+    )
     parser.add_argument(
         "--device", choices=["auto", "cuda", "cpu"], default="auto",
         help="运行设备 (default: auto)",
@@ -68,23 +74,23 @@ def parse_args():
         "--max-queue-size", type=int, default=None,
         help=f"任务队列最大长度 (default: {cfg.MAX_QUEUE_SIZE})",
     )
+    parser.add_argument(
+        "--enable-stream", dest="enable_stream", action="store_true", default=False,
+        help="挂载实时转写端点 WS /v2/asr/stream（路线B，standard 模式）",
+    )
+    parser.add_argument(
+        "--max-stream-sessions", type=int, default=None,
+        help=f"实时最大并发会话数 (default: {cfg.MAX_STREAM_SESSIONS})",
+    )
+    parser.add_argument(
+        "--stream-asr-concurrency", type=int, default=None,
+        help=f"实时 ASR 解码并发上限 (default: {cfg.STREAM_ASR_CONCURRENCY})",
+    )
     return parser.parse_args()
 
 
-def create_app(args=None) -> FastAPI:
-    """创建并配置 FastAPI 应用"""
-    if args is None:
-        args = parse_args()
-
-    # 1. 配置日志
-    setup_logger()
-    logger.info("Qwen3-ASR Service 启动中...")
-
-    # 2. 检测 ffmpeg
-    check_ffmpeg()
-    logger.info("ffmpeg 检测通过")
-
-    # 3. 写入全局配置
+def _apply_cli_config(args):
+    """将命令行参数写入全局配置（模式无关部分）"""
     cfg.MODEL_SOURCE = args.model_source
     cfg.MAX_SEGMENT_DURATION = args.max_segment
     if args.host is not None:
@@ -95,10 +101,48 @@ def create_app(args=None) -> FastAPI:
         cfg.API_KEY = args.api_key
     if args.max_queue_size is not None:
         cfg.MAX_QUEUE_SIZE = args.max_queue_size
+    cfg.SERVE_MODE = getattr(args, "serve_mode", "standard")
+    cfg.ENABLE_STREAM = getattr(args, "enable_stream", False)
+    if getattr(args, "max_stream_sessions", None) is not None:
+        cfg.MAX_STREAM_SESSIONS = args.max_stream_sessions
+    if getattr(args, "stream_asr_concurrency", None) is not None:
+        cfg.STREAM_ASR_CONCURRENCY = args.stream_asr_concurrency
     if cfg.API_KEY:
         logger.info("API 密钥已配置，Bearer token 认证已启用")
 
-    # 4. 检测设备并确定运行参数
+
+def create_app(args=None) -> FastAPI:
+    """创建并配置 FastAPI 应用，按 --serve-mode 分派装配。"""
+    if args is None:
+        args = parse_args()
+
+    # 1. 配置日志
+    setup_logger()
+    logger.info("Qwen3-ASR Service 启动中...")
+
+    # 2. 写入全局配置（模式无关）
+    _apply_cli_config(args)
+
+    serve_mode = getattr(args, "serve_mode", "standard")
+    app = FastAPI(title="Qwen3-ASR Service", version="2.0.0")
+
+    if serve_mode == "vllm":
+        _assemble_vllm(app, args)
+    else:
+        _assemble_standard(app, args)
+
+    logger.info(f"Qwen3-ASR Service 就绪（serve-mode={serve_mode}），监听 {cfg.HOST}:{cfg.PORT}")
+    return app
+
+
+def _assemble_standard(app: FastAPI, args) -> None:
+    """standard 模式：transformers/OpenVINO 离线引擎 + 离线接口(v1/v2) + 共性接口。
+    实时 Route B 的挂载在 T09 接通（见下方 TODO）。"""
+    # ffmpeg（离线格式转换依赖）
+    check_ffmpeg()
+    logger.info("ffmpeg 检测通过")
+
+    # 检测设备并确定运行参数
     device_info = detect_device()
     device = resolve_device(args.device, device_info=device_info)
     is_cpu = device == "cpu"
@@ -123,7 +167,7 @@ def create_app(args=None) -> FastAPI:
         f"align={enable_align}, punc={enable_punc}"
     )
 
-    # 5. 加载引擎
+    # 加载引擎
     device_map = "cuda:0" if device == "cuda" else "cpu"
 
     # VAD 引擎（必须）
@@ -166,14 +210,14 @@ def create_app(args=None) -> FastAPI:
             punc_engine = None
             enable_punc = False
 
-    # 6. 创建 Pipeline
+    # 创建 Pipeline
     pipeline = ASRPipeline(
         asr_engine=asr_engine,
         vad_engine=vad_engine,
         punc_engine=punc_engine,
     )
 
-    # 7. 创建任务管理器
+    # 创建任务管理器
     task_manager = TaskManager(max_queue_size=cfg.MAX_QUEUE_SIZE)
 
     def process_task(task: dict):
@@ -191,9 +235,22 @@ def create_app(args=None) -> FastAPI:
     task_manager.set_processor(process_task)
     task_manager.start()
 
-    # 8. 构建服务信息（供 /health 接口使用）
+    # 构建服务信息（mode-aware，供 /health、/capabilities 使用）
+    stream_enabled = getattr(args, "enable_stream", False)
+    capabilities = {
+        "mode": "standard",
+        "offline_api": True,
+        "stream": {
+            "enabled": stream_enabled,
+            "backend": "vad-offline" if stream_enabled else None,
+            "path": "/v2/asr/stream" if stream_enabled else None,
+            "partial_results": False,
+            "word_timestamps": enable_align if stream_enabled else False,
+        },
+    }
     service_info = {
         "status": "ready",
+        "mode": "standard",
         "device": device,
         "model_size": model_size,
         "align_enabled": enable_align,
@@ -201,12 +258,34 @@ def create_app(args=None) -> FastAPI:
         "asr_backend": asr_backend,
         "vad_backend": VADEngine.BACKEND,
         "punc_backend": PuncEngine.BACKEND if enable_punc else "disabled",
+        "capabilities": capabilities,
     }
 
-    # 9. 创建 FastAPI 应用
-    app = FastAPI(title="Qwen3-ASR Service", version="2.0.0")
-    init_routes(task_manager, service_info)
-    app.include_router(router)
+    # 共性路由（两模式都挂）
+    init_common(service_info)
+    app.include_router(build_common_router("/v1"))
+    app.include_router(build_common_router("/v2"))
+
+    # 离线路由：v1（含 deprecated 别名）+ v2（同名复用）
+    init_routes(task_manager)
+    app.include_router(build_offline_router("/v1", include_deprecated=True))
+    app.include_router(build_offline_router("/v2"))
+
+    # 实时 Route B：按 --enable-stream 挂载统一端点 WS /v2/asr/stream
+    stream_backend = None
+    if stream_enabled:
+        from app.api.ws_routes import ws_router_stream, init_ws_stream
+        from app.runtime.stream_session import VadOfflineBackend
+        stream_backend = VadOfflineBackend(
+            asr_engine, vad_engine, punc_engine,
+            max_sessions=cfg.MAX_STREAM_SESSIONS,
+            asr_concurrency=cfg.STREAM_ASR_CONCURRENCY,
+            max_segment_sec=cfg.STREAM_MAX_SEGMENT_SEC,
+            vad_chunk_ms=cfg.STREAM_VAD_CHUNK_MS,
+        )
+        init_ws_stream(stream_backend)
+        app.include_router(ws_router_stream)
+        logger.info("实时转写已启用：WS /v2/asr/stream（路线B / vad-offline）")
 
     # 条件挂载 Web UI
     if getattr(args, "web", False):
@@ -218,11 +297,49 @@ def create_app(args=None) -> FastAPI:
     def on_shutdown():
         logger.info("收到终止信号，正在安全关闭服务...")
         task_manager.shutdown()
+        if stream_backend is not None:
+            stream_backend.shutdown()
         logger.info("Qwen3-ASR Service 已安全退出")
 
-    logger.info(f"Qwen3-ASR Service 就绪，监听 {cfg.HOST}:{cfg.PORT}")
     logger.info(f"运行模式: {service_info}")
-    return app
+
+
+def _assemble_vllm(app: FastAPI, args) -> None:
+    """vllm 模式占位（Phase 3 启用）：仅挂共性接口，不加载 transformers/OpenVINO 引擎。
+
+    vLLM 原生流式（路线 A）的引擎与实时端点将在 Phase 3（T12/T13）接入；
+    当前仅通过 /health、/capabilities 暴露模式与"未启用"能力。
+    """
+    logger.warning(
+        "serve-mode=vllm：vLLM 原生流式为 Phase 3 功能，当前未启用。"
+        "本模式仅提供 /health 与 /capabilities；实时端点将在 Phase 3 接入。"
+        "如需离线/实时(路线B)功能，请使用 --serve-mode standard。"
+    )
+
+    device_info = detect_device()
+    device = resolve_device(args.device, device_info=device_info)
+
+    capabilities = {
+        "mode": "vllm",
+        "offline_api": False,
+        "stream": {
+            "enabled": False,          # Phase 3 接入后置位
+            "backend": "vllm-native",
+            "path": None,
+            "partial_results": False,
+            "word_timestamps": False,
+        },
+    }
+    service_info = {
+        "status": "ready",
+        "mode": "vllm",
+        "device": device,
+        "capabilities": capabilities,
+    }
+
+    init_common(service_info)
+    app.include_router(build_common_router("/v1"))
+    app.include_router(build_common_router("/v2"))
 
 
 app = None
@@ -241,4 +358,10 @@ if __name__ == "__main__":
         cfg.HOST = args.host
     if args.port is not None:
         cfg.PORT = args.port
-    uvicorn.run("app.main:get_app", host=cfg.HOST, port=cfg.PORT, reload=False, factory=True)
+    uvicorn.run(
+        "app.main:get_app", host=cfg.HOST, port=cfg.PORT, reload=False, factory=True,
+        # 实时流式：放宽 keepalive 与接收队列，配合应用层收发解耦/积压上限，
+        # 避免推理负载高时 pong 读取延迟被误判为超时（1011 keepalive ping timeout）
+        ws_ping_timeout=60,
+        ws_max_queue=256,
+    )

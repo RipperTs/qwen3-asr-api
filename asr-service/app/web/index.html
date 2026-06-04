@@ -11,7 +11,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 
 /* 页面头部 */
 .page-header { margin-bottom: 20px; }
-.page-header h1 { text-align: center; margin-bottom: 16px; color: #1a1a2e; font-size: 1.6em; }
+.page-header h1 { text-align: center; margin-bottom: 12px; color: #1a1a2e; font-size: 1.6em; }
+.topnav { display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; }
+.topnav a { text-decoration: none; padding: 8px 20px; border-radius: 8px; background: #fff; color: #475569; font-size: 0.9em; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.topnav a.active { background: #6366f1; color: #fff; }
+.topnav a:hover { background: #eef2ff; color: #4f46e5; }
+.topnav a.active:hover { background: #4f46e5; color: #fff; }
 .api-key-bar {
   background: #fff; border-radius: 10px; padding: 12px 16px;
   display: flex; align-items: center; gap: 10px;
@@ -192,6 +197,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
   <!-- 页面头部 -->
   <div class="page-header">
     <h1>Qwen3-ASR Service</h1>
+    <div class="topnav">
+      <a href="/web-ui" class="active">📄 离线转写</a>
+      <a href="/web-ui/stream">🎙 实时转写</a>
+    </div>
     <div class="api-key-bar">
       <label for="apiKeyInput">API Key</label>
       <input type="password" id="apiKeyInput" placeholder="留空表示无需认证">
@@ -557,6 +566,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
       taskEmpty.style.display = 'block';
     }
   }
+
 })();
 </script>
 </body>

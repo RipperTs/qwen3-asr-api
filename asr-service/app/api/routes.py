@@ -5,7 +5,7 @@ import logging
 import queue
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from app.api.schemas import ASRResponse, TaskStatusResponse, TaskListResponse, CancelResponse, HealthResponse
+from app.api.schemas import ASRResponse, TaskStatusResponse, TaskListResponse, CancelResponse
 from app.config import UPLOADS_DIR, MAX_AUDIO_FILE_SIZE
 import app.config as cfg
 
@@ -27,8 +27,6 @@ async def verify_api_key(
         )
 
 
-router = APIRouter(prefix="/v1")
-
 # 支持的音频文件扩展名
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".wma", ".amr", ".opus"}
 
@@ -37,21 +35,20 @@ UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1MB
 
 # 运行时依赖，由 main.py 启动时注入
 _task_manager = None
-_service_info = None
 
 
-def init_routes(task_manager, service_info: dict):
-    """注入运行时依赖"""
-    global _task_manager, _service_info
+def init_routes(task_manager):
+    """注入运行时依赖（离线控制器仅依赖 task_manager；health 已迁至 common_routes）"""
+    global _task_manager
     _task_manager = task_manager
-    _service_info = service_info
 
 
-@router.post("/asr", response_model=ASRResponse, dependencies=[Depends(verify_api_key)])
+# ─── 离线批处理控制器（纯函数，v1/v2 共用同一组实现）───
+
 async def submit_asr(
     file: UploadFile = File(...),
     language: str | None = Form(None),
-):
+) -> ASRResponse:
     """提交 ASR 任务"""
     if _task_manager is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
@@ -103,8 +100,7 @@ async def submit_asr(
     return ASRResponse(task_id=task_id)
 
 
-@router.get("/tasks", response_model=TaskListResponse, dependencies=[Depends(verify_api_key)])
-async def list_tasks(status: str | None = None):
+async def list_tasks(status: str | None = None) -> TaskListResponse:
     """获取任务列表，可通过 status 参数筛选（pending/processing/completed/failed/cancelled）"""
     if _task_manager is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
@@ -113,8 +109,7 @@ async def list_tasks(status: str | None = None):
     return TaskListResponse(total=len(tasks), tasks=tasks)
 
 
-@router.get("/tasks/{task_id}", response_model=TaskStatusResponse, dependencies=[Depends(verify_api_key)])
-async def get_task_detail(task_id: str):
+async def get_task_detail(task_id: str) -> TaskStatusResponse:
     """查询单个任务详情（含识别结果）"""
     if _task_manager is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
@@ -136,14 +131,12 @@ async def get_task_detail(task_id: str):
     )
 
 
-@router.get("/asr/{task_id}", response_model=TaskStatusResponse, dependencies=[Depends(verify_api_key)], deprecated=True)
-async def get_task_status(task_id: str):
-    """查询任务状态（已过时，请使用 GET /v1/tasks/{task_id}）"""
+async def get_task_status(task_id: str) -> TaskStatusResponse:
+    """查询任务状态（已过时，请使用 GET /tasks/{task_id}）"""
     return await get_task_detail(task_id)
 
 
-@router.delete("/tasks/{task_id}", response_model=CancelResponse, dependencies=[Depends(verify_api_key)])
-async def cancel_asr(task_id: str):
+async def cancel_asr(task_id: str) -> CancelResponse:
     """取消 ASR 任务"""
     if _task_manager is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
@@ -178,9 +171,24 @@ async def cancel_asr(task_id: str):
     )
 
 
-@router.get("/health", response_model=HealthResponse)
-async def health_check():
-    """健康检查，返回当前运行模式和加载的模型信息"""
-    if _service_info is None:
-        raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
-    return HealthResponse(**_service_info)
+def build_offline_router(prefix: str, *, include_deprecated: bool = False) -> APIRouter:
+    """离线批处理路由工厂；v1 与 v2 共用同一组控制器函数（零逻辑重复）。
+
+    参数:
+        prefix: 路由前缀，如 "/v1" 或 "/v2"
+        include_deprecated: 是否注册已过时的 GET /asr/{task_id}（仅 v1 保留以兼容旧客户端）
+    """
+    r = APIRouter(prefix=prefix)
+    dep = [Depends(verify_api_key)]
+    r.add_api_route("/asr", submit_asr, methods=["POST"],
+                    response_model=ASRResponse, dependencies=dep)
+    r.add_api_route("/tasks", list_tasks, methods=["GET"],
+                    response_model=TaskListResponse, dependencies=dep)
+    r.add_api_route("/tasks/{task_id}", get_task_detail, methods=["GET"],
+                    response_model=TaskStatusResponse, dependencies=dep)
+    r.add_api_route("/tasks/{task_id}", cancel_asr, methods=["DELETE"],
+                    response_model=CancelResponse, dependencies=dep)
+    if include_deprecated:
+        r.add_api_route("/asr/{task_id}", get_task_status, methods=["GET"],
+                        response_model=TaskStatusResponse, dependencies=dep, deprecated=True)
+    return r

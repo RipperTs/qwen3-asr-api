@@ -1,5 +1,6 @@
 import logging
 import sys
+import threading
 
 # Python 3.12+ distutils compatibility for funasr
 if sys.version_info >= (3, 12):
@@ -27,6 +28,8 @@ class PuncEngine:
     def __init__(self):
         self._model_key = "punc"
         self._model = None
+        # funasr AutoModel.generate 非线程安全：离线管线与实时会话共用此推理锁
+        self._infer_lock = threading.Lock()
 
     def load(self):
         local_dir = MODEL_LOCAL_MAP[self._model_key]
@@ -49,7 +52,8 @@ class PuncEngine:
         if not text or not text.strip():
             return text
 
-        res = self._model.generate(input=text)
+        with self._infer_lock:
+            res = self._model.generate(input=text)
         if res and len(res) > 0:
             return res[0].get("text", text)
         return text

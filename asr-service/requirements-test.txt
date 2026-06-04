@@ -1,0 +1,7 @@
+# 测试依赖（仅开发/CI 使用，不进运行期镜像）
+# 运行期依赖（torch/funasr/qwen_asr/fastapi/pydantic/soundfile 等）见 requirements.txt
+pytest
+pytest-asyncio
+pytest-mock
+pytest-cov
+httpx
