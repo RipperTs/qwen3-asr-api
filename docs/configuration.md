@@ -16,6 +16,7 @@
 - [配置文件（config.yaml）](#配置文件configyaml)
 - [环境变量](#环境变量)
 - [离线任务持久化（tasks.db）](#离线任务持久化tasksdb)
+- [内置常量（app/config.py）](#内置常量appconfigpy)
 
 ---
 
@@ -131,3 +132,18 @@ enable_task_store: true
 - 历史任务的查询与删除接口见 [API 文档 · 任务持久化对 API 的影响](api/v2.md#任务持久化对-api-的影响)。
 - 只保存文本结果与元数据，**不留存音频原件**；持久化写入失败只告警，不影响任务执行。
 - 删除 `data/tasks.db` = 清空历史记录，不影响服务功能。对内容留存有更严格要求时，调小 `task_retention_days` 或关闭开关。
+
+## 内置常量（app/config.py）
+
+不走启动参数/配置文件的内置限制（修改需直接编辑 `app/config.py`）：
+
+| 配置 | 默认值 | 说明 |
+|------|--------|------|
+| MAX_AUDIO_DURATION | 14400s | 最大音频时长（4 小时） |
+| MAX_AUDIO_FILE_SIZE | 1024MB | 最大上传文件大小 |
+| MIN_AUDIO_DURATION | 1.0s | 最短音频时长 |
+| TASK_TIMEOUT | 1800s | 单任务超时（30 分钟） |
+| TASK_RESULT_TTL | 3600s | 内存中终态任务保留时长（持久化历史不受此限） |
+| STREAM_MAX_SESSION_SECONDS | 3600s | 实时单会话最长时长 |
+| STREAM_MAX_FRAME_BYTES | 2MB | 实时单条二进制帧上限 |
+| STREAM_MAX_BACKLOG_BYTES | 8MB | 实时处理积压上限（超限断开） |

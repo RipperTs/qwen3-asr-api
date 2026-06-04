@@ -16,6 +16,7 @@ Higher layers override lower ones for the same parameter; **explicitly passed** 
 - [Config File (config.yaml)](#config-file-configyaml)
 - [Environment Variables](#environment-variables)
 - [Offline Task Persistence (tasks.db)](#offline-task-persistence-tasksdb)
+- [Built-in Constants (app/config.py)](#built-in-constants-appconfigpy)
 
 ---
 
@@ -131,3 +132,18 @@ enable_task_store: true
 - Query and deletion endpoints for historical tasks: see [API reference · How Task Persistence Affects the API](api/v2_EN.md#how-task-persistence-affects-the-api).
 - Only text results and metadata are stored — **no original audio is retained**; persistence write failures are logged as warnings and never affect task execution.
 - Deleting `data/tasks.db` = clearing history without affecting functionality. For stricter content-retention requirements, lower `task_retention_days` or turn the switch off.
+
+## Built-in Constants (app/config.py)
+
+Built-in limits not exposed as startup parameters / config-file keys (edit `app/config.py` directly to change):
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| MAX_AUDIO_DURATION | 14400s | Max audio duration (4 hours) |
+| MAX_AUDIO_FILE_SIZE | 1024MB | Max upload file size |
+| MIN_AUDIO_DURATION | 1.0s | Min audio duration |
+| TASK_TIMEOUT | 1800s | Per-task timeout (30 minutes) |
+| TASK_RESULT_TTL | 3600s | In-memory retention of terminal tasks (persisted history is unaffected) |
+| STREAM_MAX_SESSION_SECONDS | 3600s | Max real-time session duration |
+| STREAM_MAX_FRAME_BYTES | 2MB | Max binary frame size (real-time) |
+| STREAM_MAX_BACKLOG_BYTES | 8MB | Max processing backlog (real-time, disconnects when exceeded) |
