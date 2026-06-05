@@ -31,6 +31,44 @@ window.AsrCommon = (function () {
   /* 说话人徽标取色：标签字母 → 固定 8 色板下标（app.css .spk-0 ~ .spk-7，同标签恒同色） */
   function spkIdx(label) { return ((label.charCodeAt(0) - 65) % 8 + 8) % 8; }
 
+  /* —— i18n：双态 zh/en；初始 = localStorage 显式选择 > 浏览器语言自动检测 —— */
+  const locale = ref(localStorage.getItem('asr_lang')
+    || ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en'));
+  watch(locale, v => { document.documentElement.lang = v === 'zh' ? 'zh-CN' : 'en'; }, { immediate: true });
+  /* 仅显式切换才落 localStorage——保留"从未选择过"状态供文档页按浏览器语言跳版本 */
+  function setLang(v) { locale.value = v; localStorage.setItem('asr_lang', v); }
+  function toggleLang() { setLang(locale.value === 'zh' ? 'en' : 'zh'); }
+  function langChosen() { return localStorage.getItem('asr_lang') != null; }
+  /* 文案工厂：各页字典就近定义；t() 内读 locale.value，模板/computed 随切换自动重渲染。
+   * 占位符 {0}/{1} 按位替换；缺词回退中文再回退 key（漏译可见、不报错）。 */
+  function makeT(dict) {
+    return (key, ...args) => {
+      let s = (dict[locale.value] || {})[key];
+      if (s == null) s = (dict.zh || {})[key];
+      if (s == null) return key;
+      return args.length ? s.replace(/\{(\d+)\}/g, (m, i) => (args[i] != null ? String(args[i]) : m)) : s;
+    };
+  }
+
+  /* 应用栏共享文案（四页 in-DOM 模板使用 makeRoot 暴露的 t） */
+  const COMMON_M = {
+    zh: {
+      'nav.offline': '离线转写', 'nav.stream': '实时转写', 'nav.speakers': '说话人', 'nav.docs': '文档',
+      'key.hint': 'API Key（留空表示无需认证）',
+      'theme.auto': '主题：跟随系统', 'theme.light': '主题：浅色', 'theme.dark': '主题：深色',
+      'lang.title': '切换语言 / Switch language',
+      'svc.checking': '服务状态检测中…', 'svc.ready': '服务就绪', 'svc.notReady': '服务未就绪：', 'svc.unreachable': '服务不可达',
+    },
+    en: {
+      'nav.offline': 'Transcribe', 'nav.stream': 'Live', 'nav.speakers': 'Speakers', 'nav.docs': 'Docs',
+      'key.hint': 'API Key (leave empty if auth is disabled)',
+      'theme.auto': 'Theme: system', 'theme.light': 'Theme: light', 'theme.dark': 'Theme: dark',
+      'lang.title': '切换语言 / Switch language',
+      'svc.checking': 'Checking service…', 'svc.ready': 'Service ready', 'svc.notReady': 'Service not ready: ', 'svc.unreachable': 'Service unreachable',
+    },
+  };
+  const ct = makeT(COMMON_M);
+
   /* —— 共享 API Key（两页共用 localStorage 键 asr_api_key，应用栏 popover 中编辑）—— */
   const apiKey = ref(localStorage.getItem('asr_api_key') || '');
   watch(apiKey, v => localStorage.setItem('asr_api_key', v.trim()));
@@ -95,29 +133,44 @@ window.AsrCommon = (function () {
           localStorage.setItem('asr_theme', themeMode.value);
         }
         const themeIcon = computed(() => ({ auto: 'auto', light: 'sun', dark: 'moon' }[themeMode.value]));
-        const themeLabel = computed(() => ({ auto: '主题：跟随系统', light: '主题：浅色', dark: '主题：深色' }[themeMode.value]));
+        const themeLabel = computed(() => ct({ auto: 'theme.auto', light: 'theme.light', dark: 'theme.dark' }[themeMode.value]));
         const hasKey = computed(() => !!apiKey.value.trim());
 
-        // 服务状态点：加载时查一次 /v2/health（无鉴权端点），不做持续轮询
-        const svc = reactive({ cls: '', title: '服务状态检测中…' });
+        // Naive UI 组件内置文案（空表/分页/确认按钮等）跟随语言
+        const naiveLocale = computed(() => (locale.value === 'zh' ? naive.zhCN : naive.enUS));
+        const naiveDateLocale = computed(() => (locale.value === 'zh' ? naive.dateZhCN : naive.dateEnUS));
+        // 文档导航入口随语言指向对应版本（英文镜像 slug = readme_en）
+        const docsHref = computed(() => (locale.value === 'en' ? '/web-ui/docs/readme_en' : '/web-ui/docs'));
+
+        // 服务状态点：加载时查一次 /v2/health（无鉴权端点），不做持续轮询；
+        // 状态存 key+detail，title 经 computed 翻译（语言切换即时生效）
+        const svc = reactive({ cls: '', key: 'checking', detail: '' });
+        const svcTitle = computed(() => {
+          if (svc.key === 'ready') return ct('svc.ready') + (svc.detail ? ' · ' + svc.detail : '');
+          if (svc.key === 'notReady') return ct('svc.notReady') + svc.detail;
+          return ct('svc.' + svc.key);
+        });
         onMounted(async () => {
           try {
             const r = await fetch('/v2/health');
             const d = await r.json();
             if (r.ok && d.status === 'ready') {
               svc.cls = 'ok';
-              svc.title = '服务就绪 · ' + [d.device, d.model_size, d.asr_backend].filter(Boolean).join(' · ');
+              svc.key = 'ready';
+              svc.detail = [d.device, d.model_size, d.asr_backend].filter(Boolean).join(' · ');
             } else {
               svc.cls = 'warn';
-              svc.title = '服务未就绪：' + (d.status || ('HTTP ' + r.status));
+              svc.key = 'notReady';
+              svc.detail = d.status || ('HTTP ' + r.status);
             }
           } catch (e) {
             svc.cls = 'off';
-            svc.title = '服务不可达';
+            svc.key = 'unreachable';
           }
         });
 
-        return { theme, themeOverrides, themeMode, themeIcon, themeLabel, cycleTheme, hasKey, svc, apiKey };
+        return { theme, themeOverrides, themeMode, themeIcon, themeLabel, cycleTheme, hasKey, svc, svcTitle, apiKey,
+                 t: ct, locale, toggleLang, docsHref, naiveLocale, naiveDateLocale };
       },
     };
   }
@@ -130,5 +183,6 @@ window.AsrCommon = (function () {
     app.mount('#app');
   }
 
-  return { fmtTime, fmtMs, fmtDate, fmtBytes, spkIdx, apiKey, authHeaders, mountApp };
+  return { fmtTime, fmtMs, fmtDate, fmtBytes, spkIdx, apiKey, authHeaders, mountApp,
+           locale, setLang, toggleLang, langChosen, makeT };
 })();

@@ -10,7 +10,7 @@
 </head>
 <body>
 <div id="app">
-  <n-config-provider :theme="theme" :theme-overrides="themeOverrides">
+  <n-config-provider :theme="theme" :theme-overrides="themeOverrides" :locale="naiveLocale" :date-locale="naiveDateLocale">
     <n-global-style></n-global-style>
     <header class="appbar">
       <div class="appbar-inner">
@@ -18,25 +18,26 @@
           <a-icon name="logo" size="20"></a-icon><span>Qwen3-ASR</span>
         </a>
         <nav class="appnav">
-          <a href="/web-ui">离线转写</a>
-          <a href="/web-ui/stream">实时转写</a>
-          <a href="/web-ui/speakers">说话人</a>
-          <a href="/web-ui/docs" class="active">文档</a>
+          <a href="/web-ui">{{ t('nav.offline') }}</a>
+          <a href="/web-ui/stream">{{ t('nav.stream') }}</a>
+          <a href="/web-ui/speakers">{{ t('nav.speakers') }}</a>
+          <a :href="docsHref" class="active">{{ t('nav.docs') }}</a>
         </nav>
         <div class="appbar-right">
           <n-tooltip trigger="hover">
             <template #trigger><span class="svc-dot" :class="svc.cls"></span></template>
-            {{ svc.title }}
+            {{ svcTitle }}
           </n-tooltip>
           <n-popover trigger="click" placement="bottom-end">
             <template #trigger>
               <button class="iconbtn" :class="{ 'has-key': hasKey }" title="API Key"><a-icon name="key"></a-icon></button>
             </template>
             <div style="width:240px;">
-              <n-text depth="3" style="display:block;font-size:.78em;margin-bottom:6px;">API Key（留空表示无需认证）</n-text>
+              <n-text depth="3" style="display:block;font-size:.78em;margin-bottom:6px;">{{ t('key.hint') }}</n-text>
               <n-input v-model:value="apiKey" type="password" show-password-on="click" size="small" placeholder="sk-..."></n-input>
             </div>
           </n-popover>
+          <button class="iconbtn lang-btn" :title="t('lang.title')" @click="toggleLang">{{ locale === 'zh' ? '中' : 'EN' }}</button>
           <button class="iconbtn" :title="themeLabel" @click="cycleTheme"><a-icon :name="themeIcon"></a-icon></button>
         </div>
       </div>
@@ -51,6 +52,20 @@
   </n-config-provider>
 </div>
 <script src="/web-ui/assets/common.js"></script>
-<script>window.AsrCommon.mountApp();</script>
+<script>
+(function () {
+  var C = window.AsrCommon, DOC_LANG = '__DOC_LANG__', ALT = '__DOC_ALT_SLUG__';
+  if (C.locale.value !== DOC_LANG) {
+    if (!C.langChosen() && ALT) { location.replace('/web-ui/docs/' + ALT); return; }
+    // 显式跟随页内中英链接打开的文档：界面语言同步到正文语言
+    C.setLang(DOC_LANG);
+  }
+  // 应用栏切语言 = 跳转到对应语言版本（无对侧版本时仅界面文案切换）
+  Vue.watch(C.locale, function (v) {
+    if (v !== DOC_LANG && ALT) location.href = '/web-ui/docs/' + ALT;
+  });
+  C.mountApp();
+})();
+</script>
 </body>
 </html>

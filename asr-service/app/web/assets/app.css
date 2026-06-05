@@ -53,6 +53,7 @@ body.dark .appnav a:hover, body.dark .appnav a.active { color: #2dd4bf; }
 body.dark .iconbtn { color: #94a3b8; }
 body.dark .iconbtn:hover { background: rgba(45, 212, 191, .12); color: #2dd4bf; }
 .iconbtn.has-key::after { content: ''; position: absolute; right: 5px; bottom: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.iconbtn.lang-btn { width: auto; min-width: 32px; padding: 0 8px; font-size: .74em; font-weight: 700; }
 .svc-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #94a3b8; margin-right: 2px; cursor: default; }
 .svc-dot.ok { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, .65); }
 .svc-dot.warn { background: #f59e0b; }

@@ -229,10 +229,15 @@ def render_doc_page(slug: str) -> str | None:
         ],
         extension_configs={"toc": {"slugify": _github_slugify}},
     )
+    # 中英对侧 slug（xxx ↔ xxx_en，仅当对侧存在时注入）：供前端语言切换/首访自动跳版本
+    is_en = slug.endswith("_en")
+    alt = slug[: -len("_en")] if is_en else f"{slug}_en"
     page = (
         template
         .replace("__DOC_TITLE__", html.escape(info["title"]))
         .replace("__DOC_NAV__", _build_nav(slug, registry))
+        .replace("__DOC_LANG__", "en" if is_en else "zh")
+        .replace("__DOC_ALT_SLUG__", alt if alt in registry else "")
         .replace("__DOC_BODY__", md.convert(text))
     )
     _page_cache[slug] = page

@@ -6,7 +6,88 @@
 (function () {
   'use strict';
   const { ref, reactive, computed, watch, onMounted, onBeforeUnmount } = Vue;
-  const { fmtMs, fmtBytes, spkIdx, apiKey, mountApp } = window.AsrCommon;
+  const { fmtMs, fmtBytes, spkIdx, apiKey, mountApp, makeT, locale } = window.AsrCommon;
+
+  const M = {
+    zh: {
+      // 页面标题
+      'page.title': '实时转写 - Qwen3-ASR Service',
+      // 能力告警
+      'cap.warning': '当前服务未启用实时端点。请用 --serve-mode standard --enable-stream 启动后刷新本页。',
+      // 状态条（statusKey → 文案）
+      'st.idle': '未连接', 'st.connecting': '连接中…', 'st.connected': '已连接 · {0}',
+      'st.recording': '录音中…', 'st.pushing': '推流中…', 'st.loadingFf': '正在加载转码器 (ffmpeg-wasm)…',
+      'st.micStopped': '已停止，等待末段结果…', 'st.fileDone': '推流完成，等待末段结果…',
+      'st.fileStopped': '已停止', 'st.disconnected': '已断开', 'st.disconnectedCode': '已断开 ({0})',
+      'st.sessionClosed': '会话结束',
+      // 能力行（capInfo）
+      'cap.protocol': '协议', 'cap.version': 'v', 'cap.mode': '模式', 'cap.backend': '后端',
+      'cap.sampleRate': '采样率', 'cap.capabilities': '能力',
+      // 诊断指标
+      'diag.sent': '发送速率', 'diag.recv': '接收速率', 'diag.buf': '发送缓冲',
+      'diag.frame': '最大帧', 'diag.stall': '主线程卡顿',
+      'diag.unit.frame': '帧/s', 'diag.unit.msg': '条/s', 'diag.unit.kb': 'KB',
+      'diag.unit.sample': '样本', 'diag.unit.ms': 'ms',
+      // 输入源面板
+      'panel.input': '输入源', 'input.langPlaceholder': '语言（默认 auto，如 zh / en）',
+      'input.identify': '声纹识别（真名标注）',
+      'tab.mic': '麦克风', 'tab.file': '文件模拟',
+      // 麦克风
+      'mic.start': '开始录音', 'mic.stop': '停止录音', 'mic.forceClose': '强制断开',
+      'mic.hint': '点击后授权麦克风，边说边转写。',
+      // 文件模拟
+      'file.dragHint': '点击或拖拽选择音频文件',
+      'file.frameNote': '解码后按 200ms 分帧模拟实时推流',
+      'file.noThrottle': '不限速（自适应最大速率）',
+      'file.start': '开始模拟推流', 'file.stop': '停止', 'file.forceClose': '强制断开',
+      'file.longHint': '按需加载 ffmpeg-wasm 解码（需外网，首次约 25–30MB，仅本次会话加载一次；失败自动回退浏览器原生解码）→ 转 16k 单声道 → 200ms 分帧推流，模拟实时输入。勾选不限速时按服务端积压上限自适应控速，不会触发 backlog_overflow。',
+      // 提示与错误
+      'err.micAccess': '麦克风访问失败: {0}', 'err.worklet': 'AudioWorklet 加载失败: {0}',
+      'err.noFile': '请先选择音频文件。', 'err.decode': '音频解码失败: {0}',
+      'err.code': '[{0}] {1}',
+      'err.authFailed': '鉴权失败：请检查 API Key。',
+      'err.concurrencyFull': '并发会话已满（1013）。',
+      'err.notReady': '实时端点未就绪：请用 --serve-mode standard --enable-stream 启动服务。',
+      // 转写结果
+      'panel.result': '转写结果', 'result.waiting': '等待音频输入…', 'result.words': '({0} 词)',
+      // 协议日志
+      'log.title': '协议日志', 'log.clear': '清空', 'log.empty': '（暂无消息）',
+    },
+    en: {
+      'page.title': 'Live Transcription - Qwen3-ASR Service',
+      'cap.warning': 'The live endpoint is not enabled. Start with --serve-mode standard --enable-stream, then refresh this page.',
+      'st.idle': 'Disconnected', 'st.connecting': 'Connecting…', 'st.connected': 'Connected · {0}',
+      'st.recording': 'Recording…', 'st.pushing': 'Streaming…', 'st.loadingFf': 'Loading transcoder (ffmpeg-wasm)…',
+      'st.micStopped': 'Stopped, waiting for final segment…', 'st.fileDone': 'Streaming done, waiting for final segment…',
+      'st.fileStopped': 'Stopped', 'st.disconnected': 'Disconnected', 'st.disconnectedCode': 'Disconnected ({0})',
+      'st.sessionClosed': 'Session closed',
+      'cap.protocol': 'Protocol', 'cap.version': 'v', 'cap.mode': 'Mode', 'cap.backend': 'Backend',
+      'cap.sampleRate': 'Sample rate', 'cap.capabilities': 'Capabilities',
+      'diag.sent': 'Send rate', 'diag.recv': 'Recv rate', 'diag.buf': 'Send buffer',
+      'diag.frame': 'Max frame', 'diag.stall': 'Main-thread stall',
+      'diag.unit.frame': 'fr/s', 'diag.unit.msg': 'msg/s', 'diag.unit.kb': 'KB',
+      'diag.unit.sample': 'samples', 'diag.unit.ms': 'ms',
+      'panel.input': 'Input source', 'input.langPlaceholder': 'Language (default auto, e.g. zh / en)',
+      'input.identify': 'Speaker identification (label real names)',
+      'tab.mic': 'Microphone', 'tab.file': 'File simulation',
+      'mic.start': 'Start recording', 'mic.stop': 'Stop recording', 'mic.forceClose': 'Force disconnect',
+      'mic.hint': 'Grant microphone access, then speak to transcribe live.',
+      'file.dragHint': 'Click or drag to select an audio file',
+      'file.frameNote': 'Decoded then framed at 200ms to simulate live streaming',
+      'file.noThrottle': 'Unthrottled (adaptive max rate)',
+      'file.start': 'Start simulated streaming', 'file.stop': 'Stop', 'file.forceClose': 'Force disconnect',
+      'file.longHint': 'Lazily loads ffmpeg-wasm for decoding (requires internet, ~25–30MB on first use, loaded once per session; falls back to native browser decoding on failure) → converts to 16k mono → frames at 200ms for streaming, simulating live input. When unthrottled, rate adapts to the server backlog limit without triggering backlog_overflow.',
+      'err.micAccess': 'Microphone access failed: {0}', 'err.worklet': 'Failed to load AudioWorklet: {0}',
+      'err.noFile': 'Please select an audio file first.', 'err.decode': 'Audio decoding failed: {0}',
+      'err.code': '[{0}] {1}',
+      'err.authFailed': 'Authentication failed: please check the API Key.',
+      'err.concurrencyFull': 'Concurrent sessions are full (1013).',
+      'err.notReady': 'Live endpoint not ready: start the service with --serve-mode standard --enable-stream.',
+      'panel.result': 'Transcription', 'result.waiting': 'Waiting for audio input…', 'result.words': '({0} words)',
+      'log.title': 'Protocol log', 'log.clear': 'Clear', 'log.empty': '(no messages)',
+    },
+  };
+  const t = makeT(M);
 
   const RT_SR = 16000;
   const FRAME = 3200;                 // 200ms @16k
@@ -47,14 +128,27 @@
 
       // —— 会话状态机：idle | connecting | streaming | stopping ——
       const streamState = ref('idle');
-      const statusText = ref('未连接');
+      // 状态条存 key + 细节而非冻结的中文串：切语言时 statusText 经 t() 即时重渲染
+      const statusKey = ref('idle');
+      const statusDetail = ref('');
+      const statusText = computed(() => t('st.' + statusKey.value, statusDetail.value));
       const source = ref('mic');          // mic | file
       const busy = computed(() => streamState.value !== 'idle');
 
       // —— 提示与能力 ——
-      const capWarning = ref('');
+      // streamDisabled 存布尔状态而非冻结文案：capWarning 经 t() 随语言切换重渲染
+      const streamDisabled = ref(false);
+      const capWarning = computed(() => (streamDisabled.value ? t('cap.warning') : ''));
       const hint = ref('');
-      const capInfo = ref('');
+      // capInfo 存原始部件而非拼好的中文串：切语言时经 t() 重新拼接
+      const capParts = ref(null);         // {protocol, version, mode, backend, sampleRate, capabilities}
+      const capInfo = computed(() => {
+        const p = capParts.value;
+        if (!p) return '';
+        return t('cap.protocol') + ' ' + p.protocol + ' ' + t('cap.version') + p.version +
+          ' · ' + t('cap.mode') + ' ' + p.mode + ' · ' + t('cap.backend') + ' ' + p.backend +
+          ' · ' + t('cap.sampleRate') + ' ' + p.sampleRate + ' · ' + t('cap.capabilities') + ' ' + p.capabilities;
+      });
 
       // —— 结果 ——
       const finals = reactive([]);        // {key, start, text, words, speaker, speakerName}
@@ -164,7 +258,7 @@
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         const url = proto + '://' + location.host + '/v2/asr/stream' + (t ? '?token=' + encodeURIComponent(t) : '');
         streamState.value = 'connecting';
-        statusText.value = '连接中…';
+        statusKey.value = 'connecting'; statusDetail.value = '';
         ws = new WebSocket(url);
         ws.binaryType = 'arraybuffer';
         ws.onopen = () => log('evt', 'WS open');
@@ -177,9 +271,11 @@
             if (m.limits && m.limits.max_backlog_bytes) {
               backlogBudget = Math.floor(m.limits.max_backlog_bytes * 0.75);
             }
-            capInfo.value = '协议 ' + m.protocol + ' v' + m.protocol_version + ' · 模式 ' + m.mode +
-              ' · 后端 ' + m.backend + ' · 采样率 ' + m.sample_rate + ' · 能力 ' + JSON.stringify(m.capabilities);
-            statusText.value = '已连接 · ' + m.backend;
+            capParts.value = {
+              protocol: m.protocol, version: m.protocol_version, mode: m.mode,
+              backend: m.backend, sampleRate: m.sample_rate, capabilities: JSON.stringify(m.capabilities),
+            };
+            statusKey.value = 'connected'; statusDetail.value = m.backend;
             streamState.value = 'streaming';
             if (onReady) onReady();
           } else if (m.type === 'partial') {
@@ -189,18 +285,18 @@
             appendFinal(m);
             partial.value = '';
           } else if (m.type === 'error') {
-            hint.value = '[' + m.code + '] ' + m.message;
+            hint.value = t('err.code', m.code, m.message);
           } else if (m.type === 'session.closed') {
-            statusText.value = '会话结束';
+            statusKey.value = 'sessionClosed'; statusDetail.value = '';
           }
         };
         ws.onerror = () => log('evt', 'WS error');
         ws.onclose = ev => {
           log('evt', 'WS close code=' + ev.code);
-          statusText.value = '已断开 (' + ev.code + ')';
-          if (ev.code === 1008) hint.value = '鉴权失败：请检查 API Key。';
-          else if (ev.code === 1013) hint.value = '并发会话已满（1013）。';
-          else if (ev.code === 1011) hint.value = '实时端点未就绪：请用 --serve-mode standard --enable-stream 启动服务。';
+          statusKey.value = 'disconnectedCode'; statusDetail.value = ev.code;
+          if (ev.code === 1008) hint.value = t('err.authFailed');
+          else if (ev.code === 1013) hint.value = t('err.concurrencyFull');
+          else if (ev.code === 1011) hint.value = t('err.notReady');
           streamState.value = 'idle';
           cleanupMic();
         };
@@ -212,7 +308,7 @@
         closeWs();
         cleanupMic();
         streamState.value = 'idle';
-        statusText.value = '已断开';
+        statusKey.value = 'disconnected'; statusDetail.value = '';
       }
 
       // —— 麦克风（AudioWorklet 外置文件）——
@@ -222,7 +318,7 @@
         try {
           micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         } catch (e) {
-          hint.value = '麦克风访问失败: ' + e.message;
+          hint.value = t('err.micAccess', e.message);
           return;
         }
         openWs(async () => {
@@ -233,7 +329,7 @@
           try {
             await micCtx.audioWorklet.addModule('/web-ui/assets/pcm-worklet.js');
           } catch (e) {
-            hint.value = 'AudioWorklet 加载失败: ' + e.message;
+            hint.value = t('err.worklet', e.message);
             cleanupMic(); closeWs();
             return;
           }
@@ -257,14 +353,14 @@
           micNode.connect(micCtx.destination);
           startDiag();
           startVu();
-          statusText.value = '录音中…';
+          statusKey.value = 'recording'; statusDetail.value = '';
         });
       }
       function stopMic() {
         streamState.value = 'stopping';
         wsSendJson({ type: 'stop' });
         cleanupMic();
-        statusText.value = '已停止，等待末段结果…';
+        statusKey.value = 'micStopped'; statusDetail.value = '';
       }
       function cleanupMic() {
         stopDiag();
@@ -282,7 +378,7 @@
           const s = document.createElement('script');
           s.src = src; s.async = true;
           s.onload = res;
-          s.onerror = () => rej(new Error('脚本加载失败: ' + src));
+          s.onerror = () => rej(new Error('script load failed: ' + src));
           document.head.appendChild(s);
         });
       }
@@ -291,7 +387,7 @@
         if (ffmpegTried) return null;
         ffmpegTried = true;
         try {
-          statusText.value = '正在加载转码器 (ffmpeg-wasm)…';
+          statusKey.value = 'loadingFf'; statusDetail.value = '';
           if (!window.FFmpegWASM) await loadScript(FFMPEG_MIRROR + '/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
           if (!window.FFmpegUtil) await loadScript(FFMPEG_MIRROR + '/@ffmpeg/util@0.12.1/dist/umd/index.js');
           const { FFmpeg } = window.FFmpegWASM;
@@ -304,10 +400,10 @@
             wasmURL: await toBlobURL(core + '/ffmpeg-core.wasm', 'application/wasm'),
           });
           ffmpeg = ff;
-          log('evt', 'ffmpeg-wasm 已就绪');
+          log('evt', 'ffmpeg-wasm ready');
           return ff;
         } catch (e) {
-          log('evt', 'ffmpeg-wasm 加载失败，回退浏览器原生解码: ' + e.message);
+          log('evt', 'ffmpeg-wasm load failed, falling back to native browser decoding: ' + e.message);
           return null;
         }
       }
@@ -371,7 +467,7 @@
       async function startFile() {
         hint.value = '';
         const file = streamFile.value;
-        if (!file) { hint.value = '请先选择音频文件。'; return; }
+        if (!file) { hint.value = t('err.noFile'); return; }
         fileRunning.value = true;
         fileProgress.value = 0;
         fileAborted = false;
@@ -380,16 +476,16 @@
         try {
           pcm16 = await decodeFileTo16kPCM(file);
         } catch (e) {
-          hint.value = '音频解码失败: ' + e.message;
+          hint.value = t('err.decode', e.message);
           fileRunning.value = false;
-          statusText.value = '未连接';
+          statusKey.value = 'idle'; statusDetail.value = '';
           return;
         }
         if (fileAborted) { fileRunning.value = false; return; }
 
         openWs(async () => {
           wsSendJson(startMsg());
-          statusText.value = '推流中…';
+          statusKey.value = 'pushing'; statusDetail.value = '';
           startDiag();
           pushStartTs = performance.now();
           const total = pcm16.length;
@@ -410,7 +506,7 @@
           fileProgress.value = 100;
           streamState.value = 'stopping';
           wsSendJson({ type: 'stop' });
-          statusText.value = '推流完成，等待末段结果…';
+          statusKey.value = 'fileDone'; statusDetail.value = '';
           fileRunning.value = false;
         });
       }
@@ -418,7 +514,7 @@
         fileAborted = true;
         streamState.value = 'stopping';
         wsSendJson({ type: 'stop' });
-        statusText.value = '已停止';
+        statusKey.value = 'fileStopped'; statusDetail.value = '';
         fileRunning.value = false;
       }
 
@@ -429,17 +525,19 @@
           if (!r.ok) return;
           const c = await r.json();
           canIdentify.value = !!c.speaker_identification;
-          if (!c.stream || !c.stream.enabled) {
-            capWarning.value = '当前服务未启用实时端点。请用 --serve-mode standard --enable-stream 启动后刷新本页。';
-          } else {
-            capWarning.value = '';
-          }
+          streamDisabled.value = !(c.stream && c.stream.enabled);
         } catch (e) { /* 服务未起，忽略 */ }
       }
       onMounted(precheck);
       onBeforeUnmount(() => { cleanupMic(); closeWs(); stopDiag(); });
 
+      // 页面标题本地化：随语言切换更新 document.title
+      const setTitle = () => { document.title = t('page.title'); };
+      setTitle();
+      watch(locale, setTitle);
+
       return {
+        t,
         lang, canIdentify, identifySpeakers,
         streamState, statusText, busy, source,
         capWarning, hint, capInfo, diag, vuRef,
@@ -458,11 +556,11 @@
           <div class="console-row">
             <span class="status-pill" :class="streamState"><span class="dot"></span>{{ statusText }}</span>
             <div v-if="diag.on" class="diag-row">
-              <n-statistic label="发送速率" :value="diag.sent"><template #suffix><span class="diag-unit">帧/s</span></template></n-statistic>
-              <n-statistic label="接收速率" :value="diag.recv"><template #suffix><span class="diag-unit">条/s</span></template></n-statistic>
-              <n-statistic label="发送缓冲" :value="diag.buf"><template #suffix><span class="diag-unit">KB</span></template></n-statistic>
-              <n-statistic label="最大帧" :value="diag.frame"><template #suffix><span class="diag-unit">样本</span></template></n-statistic>
-              <n-statistic label="主线程卡顿" :value="diag.stall"><template #suffix><span class="diag-unit">ms</span></template></n-statistic>
+              <n-statistic :label="t('diag.sent')" :value="diag.sent"><template #suffix><span class="diag-unit">{{ t('diag.unit.frame') }}</span></template></n-statistic>
+              <n-statistic :label="t('diag.recv')" :value="diag.recv"><template #suffix><span class="diag-unit">{{ t('diag.unit.msg') }}</span></template></n-statistic>
+              <n-statistic :label="t('diag.buf')" :value="diag.buf"><template #suffix><span class="diag-unit">{{ t('diag.unit.kb') }}</span></template></n-statistic>
+              <n-statistic :label="t('diag.frame')" :value="diag.frame"><template #suffix><span class="diag-unit">{{ t('diag.unit.sample') }}</span></template></n-statistic>
+              <n-statistic :label="t('diag.stall')" :value="diag.stall"><template #suffix><span class="diag-unit">{{ t('diag.unit.ms') }}</span></template></n-statistic>
             </div>
           </div>
           <n-text v-if="capInfo" depth="3" style="display:block;margin-top:10px;font-size:.76em;">{{ capInfo }}</n-text>
@@ -471,25 +569,25 @@
         <div class="workspace">
           <div class="side-col">
             <n-card :bordered="false" class="panel" size="small">
-              <template #header><span class="panel-title"><a-icon name="mic" size="15"></a-icon>输入源</span></template>
-              <n-input v-model:value="lang" size="small" placeholder="语言（默认 auto，如 zh / en）" style="margin-bottom:12px;"></n-input>
+              <template #header><span class="panel-title"><a-icon name="mic" size="15"></a-icon>{{ t('panel.input') }}</span></template>
+              <n-input v-model:value="lang" size="small" :placeholder="t('input.langPlaceholder')" style="margin-bottom:12px;"></n-input>
               <n-checkbox v-if="canIdentify" v-model:checked="identifySpeakers" size="small" :disabled="busy" style="margin-bottom:12px;">
-                声纹识别（真名标注）
+                {{ t('input.identify') }}
               </n-checkbox>
               <n-tabs v-model:value="source" type="segment" size="small">
-                <n-tab-pane name="mic" tab="麦克风" :disabled="busy && source !== 'mic'">
+                <n-tab-pane name="mic" :tab="t('tab.mic')" :disabled="busy && source !== 'mic'">
                   <n-space vertical size="large" style="margin-top:12px;">
                     <n-button v-if="!busy" id="micStart" type="primary" size="large" block strong @click="startMic">
-                      <a-icon name="mic" size="15" style="margin-right:7px;"></a-icon>开始录音
+                      <a-icon name="mic" size="15" style="margin-right:7px;"></a-icon>{{ t('mic.start') }}
                     </n-button>
                     <n-button v-else type="error" size="large" block strong @click="streamState === 'stopping' ? forceClose() : stopMic()">
-                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>{{ streamState === 'stopping' ? '强制断开' : '停止录音' }}
+                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>{{ streamState === 'stopping' ? t('mic.forceClose') : t('mic.stop') }}
                     </n-button>
                     <canvas ref="vuRef" class="vu-canvas" width="300" height="12"></canvas>
-                    <n-text depth="3" style="font-size:.78em;">点击后授权麦克风，边说边转写。</n-text>
+                    <n-text depth="3" style="font-size:.78em;">{{ t('mic.hint') }}</n-text>
                   </n-space>
                 </n-tab-pane>
-                <n-tab-pane name="file" tab="文件模拟" :disabled="busy && source !== 'file'">
+                <n-tab-pane name="file" :tab="t('tab.file')" :disabled="busy && source !== 'file'">
                   <n-space vertical size="medium" style="margin-top:12px;">
                     <!-- 不设 :max="1"：达到 max 后 n-upload 会禁用触发器导致无法换文件；
                          替换语义由 onStreamUploadChange 取末项实现（列表恒 ≤1） -->
@@ -497,8 +595,8 @@
                               :disabled="busy || fileRunning" accept="audio/*" @change="onStreamUploadChange">
                       <n-upload-dragger>
                         <div style="color:#14b8a6;margin-bottom:6px;"><a-icon name="file" size="26"></a-icon></div>
-                        <n-text style="font-size:.88em;font-weight:600;">点击或拖拽选择音频文件</n-text>
-                        <n-p depth="3" style="font-size:.74em;margin:5px 0 0;">解码后按 200ms 分帧模拟实时推流</n-p>
+                        <n-text style="font-size:.88em;font-weight:600;">{{ t('file.dragHint') }}</n-text>
+                        <n-p depth="3" style="font-size:.74em;margin:5px 0 0;">{{ t('file.frameNote') }}</n-p>
                       </n-upload-dragger>
                     </n-upload>
                     <div v-if="streamFile" class="file-meta" style="margin-top:0;">
@@ -506,16 +604,16 @@
                       <span class="file-name" :title="streamFile.name">{{ streamFile.name }}</span>
                       <n-tag size="tiny" :bordered="false">{{ streamFileSize }}</n-tag>
                     </div>
-                    <n-checkbox v-model:checked="noThrottle" size="small">不限速（自适应最大速率）</n-checkbox>
+                    <n-checkbox v-model:checked="noThrottle" size="small">{{ t('file.noThrottle') }}</n-checkbox>
                     <n-button v-if="!busy && !fileRunning" type="primary" size="large" block strong @click="startFile">
-                      <a-icon name="play" size="15" style="margin-right:7px;"></a-icon>开始模拟推流
+                      <a-icon name="play" size="15" style="margin-right:7px;"></a-icon>{{ t('file.start') }}
                     </n-button>
                     <n-button v-else type="error" size="large" block strong @click="streamState === 'stopping' ? forceClose() : stopFile()">
-                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>{{ streamState === 'stopping' ? '强制断开' : '停止' }}
+                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>{{ streamState === 'stopping' ? t('file.forceClose') : t('file.stop') }}
                     </n-button>
                     <n-progress v-if="fileRunning || fileProgress > 0" type="line" :percentage="fileProgress" :height="8" :border-radius="4" :show-indicator="false"></n-progress>
                     <n-text depth="3" style="font-size:.74em;line-height:1.6;">
-                      按需加载 ffmpeg-wasm 解码（需外网，首次约 25–30MB，仅本次会话加载一次；失败自动回退浏览器原生解码）→ 转 16k 单声道 → 200ms 分帧推流，模拟实时输入。勾选不限速时按服务端积压上限自适应控速，不会触发 backlog_overflow。
+                      {{ t('file.longHint') }}
                     </n-text>
                   </n-space>
                 </n-tab-pane>
@@ -526,12 +624,12 @@
 
           <div class="main-col">
             <n-card :bordered="false" class="panel" content-class="panel-body" size="small">
-              <template #header><span class="panel-title"><a-icon name="doc" size="15"></a-icon>转写结果</span></template>
+              <template #header><span class="panel-title"><a-icon name="doc" size="15"></a-icon>{{ t('panel.result') }}</span></template>
               <div id="transcript" ref="transcriptRef">
-                <n-empty v-if="!finals.length && !partial" description="等待音频输入…" size="small" style="margin:24px 0;"></n-empty>
+                <n-empty v-if="!finals.length && !partial" :description="t('result.waiting')" size="small" style="margin:24px 0;"></n-empty>
                 <div v-for="line in finals" :key="line.key" class="transcript-line">
                   <span class="t">{{ line.start != null ? fmtMs(line.start) : '' }}</span>
-                  <span class="tx"><span v-if="line.speaker" class="speaker-badge" :class="'spk-' + spkIdx(line.speaker)">{{ line.speakerName || line.speaker }}</span>{{ line.text }}<n-text v-if="line.words" depth="3" style="font-size:.78em;"> ({{ line.words }} 词)</n-text></span>
+                  <span class="tx"><span v-if="line.speaker" class="speaker-badge" :class="'spk-' + spkIdx(line.speaker)">{{ line.speakerName || line.speaker }}</span>{{ line.text }}<n-text v-if="line.words" depth="3" style="font-size:.78em;"> {{ t('result.words', line.words) }}</n-text></span>
                 </div>
                 <div v-if="partial" class="partial-line">{{ partial }}<span class="cursor-blk"></span></div>
               </div>
@@ -542,14 +640,14 @@
         <n-card :bordered="false" class="panel dock-card" :class="{ open: logOpen }" content-class="dock-content" size="small" style="margin-top:20px;">
           <n-space justify="space-between" align="center">
             <n-button text style="font-size:.95em;font-weight:600;" @click="logOpen = !logOpen">
-              <a-icon name="doc" size="15" style="margin-right:7px;color:#14b8a6;"></a-icon>协议日志
+              <a-icon name="doc" size="15" style="margin-right:7px;color:#14b8a6;"></a-icon>{{ t('log.title') }}
               <a-icon name="chev" size="13" :style="{ marginLeft: '7px', transition: 'transform .2s', transform: logOpen ? 'rotate(180deg)' : 'none' }"></a-icon>
             </n-button>
-            <n-button v-if="logOpen" size="tiny" tertiary @click="logs.length = 0">清空</n-button>
+            <n-button v-if="logOpen" size="tiny" tertiary @click="logs.length = 0">{{ t('log.clear') }}</n-button>
           </n-space>
           <div v-if="logOpen" ref="logRef" class="proto-log dock-body" style="margin-top:10px;">
             <div v-for="l in logs" :key="l.key" :class="l.kind">{{ l.ts }} {{ l.kind === 'send' ? '→' : l.kind === 'recv' ? '←' : '•' }} {{ l.text }}</div>
-            <div v-if="!logs.length">（暂无消息）</div>
+            <div v-if="!logs.length">{{ t('log.empty') }}</div>
           </div>
         </n-card>
       </div>`,

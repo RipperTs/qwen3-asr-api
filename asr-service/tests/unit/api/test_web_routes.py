@@ -21,7 +21,7 @@ def test_web_ui_offline_page():
     html = resp.text
     assert "<!DOCTYPE html>" in html
     assert "/web-ui/stream" in html                       # 导航指向实时页
-    assert "/web-ui/docs" in html                         # 导航指向文档中心
+    assert ':href="docsHref"' in html                     # 文档导航随语言指向对应版本（i18n）
     assert 'id="app"' in html                             # Vue 挂载点
     # vendor 与页面脚本引用
     assert "vue-3.5.35.global.prod.js" in html

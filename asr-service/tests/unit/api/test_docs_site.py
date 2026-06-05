@@ -96,6 +96,19 @@ def test_render_caches_page(fake_repo):
 
 # ---------- 路由 ----------
 
+def test_render_injects_lang_and_alt_slug(fake_repo):
+    """i18n 联动注入：__DOC_LANG__/__DOC_ALT_SLUG__ 按 slug 与对侧版本存在性替换。"""
+    page = docs_site.render_doc_page("readme")
+    assert "DOC_LANG = 'zh'" in page and "ALT = 'readme_en'" in page
+    page_en = docs_site.render_doc_page("readme_en")
+    assert "DOC_LANG = 'en'" in page_en and "ALT = 'readme'" in page_en
+    # 无英文镜像的文档：ALT 注入空串（前端仅切界面文案，不跳转）
+    page_dep = docs_site.render_doc_page("deployment")
+    assert "DOC_LANG = 'zh'" in page_dep and "ALT = ''" in page_dep
+    # 占位符不残留
+    assert "__DOC_LANG__" not in page and "__DOC_ALT_SLUG__" not in page
+
+
 def test_docs_index_renders_readme(fake_repo):
     resp = _client().get("/web-ui/docs")
     assert resp.status_code == 200
