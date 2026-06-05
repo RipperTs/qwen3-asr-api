@@ -5,7 +5,7 @@
 (function () {
   'use strict';
   const { ref, reactive, computed, watch, onMounted, onBeforeUnmount, h } = Vue;
-  const { fmtTime, fmtDate, authHeaders, mountApp } = window.AsrCommon;
+  const { fmtTime, fmtDate, fmtBytes, authHeaders, mountApp } = window.AsrCommon;
 
   const STATUS_LABELS = { pending: '排队中', processing: '处理中', completed: '已完成', failed: '失败', cancelled: '已取消' };
   const STATUS_TAG_TYPES = { pending: 'warning', processing: 'info', completed: 'success', failed: 'error', cancelled: 'default' };
@@ -93,16 +93,14 @@
           audioSrc.value = '';
         }
       }
-      const fileSize = computed(() =>
-        selectedFile.value ? (selectedFile.value.size / 1024 / 1024).toFixed(2) + ' MB' : ''
-      );
+      const fileSize = computed(() => (selectedFile.value ? fmtBytes(selectedFile.value.size) : ''));
 
       // —— 当前任务 ——
       // phase: idle | submitting | running | done | error
       const current = reactive({ taskId: null, phase: 'idle', progress: 0, error: '', data: null, cancelling: false });
       let detailTimer = null;
       function resetCurrent() {
-        clearInterval(detailTimer); detailTimer = null;
+        clearTimeout(detailTimer); detailTimer = null;
         Object.assign(current, { taskId: null, phase: 'idle', progress: 0, error: '', data: null, cancelling: false });
       }
       const progressPct = computed(() => Math.round((current.progress || 0) * 100));
@@ -130,22 +128,25 @@
         }
       }
 
-      function finishPoll() { clearInterval(detailTimer); detailTimer = null; }
+      function finishPoll() { clearTimeout(detailTimer); detailTimer = null; }
       function startDetailPoll(taskId) {
         finishPoll();
-        detailTimer = setInterval(async () => {
+        // setTimeout 自重排（同列表轮询）：上次请求完成后再排下次，慢后端时不会请求堆叠
+        const tick = async () => {
           try {
             const res = await fetch('/v2/tasks/' + taskId, { headers: authHeaders() });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
             const data = await res.json();
             if (data.status === 'processing' || data.status === 'pending' || data.status === 'queued') {
               current.progress = data.progress || 0;
-            } else if (data.status === 'completed') {
-              finishPoll();
+              detailTimer = setTimeout(tick, 1000);
+              return;
+            }
+            if (data.status === 'completed') {
               current.progress = 1;
               current.phase = 'done';
               current.data = data;
             } else if (data.status === 'cancelled') {
-              finishPoll();
               if (data.result && data.result.segments && data.result.segments.length) {
                 current.phase = 'done';
                 current.data = data;
@@ -155,20 +156,22 @@
                 current.error = data.error || '任务已取消';
               }
             } else if (data.status === 'failed') {
-              finishPoll();
               current.phase = 'error';
               current.error = data.error || '识别失败';
             } else if (data.status === 'not_found') {
-              finishPoll();
               current.phase = 'error';
               current.error = '任务不存在';
+            } else {
+              // 未知状态（如鉴权失效后的非任务响应体）也终止，避免静默无限轮询
+              current.phase = 'error';
+              current.error = '未知任务状态: ' + (data.status || '(空)');
             }
           } catch (e) {
-            finishPoll();
             current.phase = 'error';
             current.error = '轮询失败: ' + e.message;
           }
-        }, 1000);
+        };
+        detailTimer = setTimeout(tick, 1000);
       }
 
       async function cancelTask() {
@@ -176,7 +179,11 @@
         current.cancelling = true;
         try {
           await fetch('/v2/tasks/' + current.taskId, { method: 'DELETE', headers: authHeaders() });
-        } catch (e) { /* 取消结果由详情轮询判定 */ }
+          // 取消结果（cancelled / 带部分结果）由详情轮询判定
+        } catch (e) {
+          current.cancelling = false;   // 请求没送达服务端，恢复按钮可重试
+          message.error('取消请求发送失败: ' + e.message);
+        }
       }
       function seekAudio(seg) {
         const el = audioRef.value;
@@ -357,7 +364,7 @@
           </div>
 
           <div class="main-col">
-            <n-card :bordered="false" class="panel" size="small">
+            <n-card :bordered="false" class="panel" content-class="panel-body" size="small">
               <template #header><span class="panel-title"><a-icon name="doc" size="15"></a-icon>识别结果</span></template>
               <template #header-extra>
                 <n-button v-if="current.phase === 'running' || current.phase === 'submitting'" size="small" type="error" tertiary
@@ -379,7 +386,7 @@
           </div>
         </div>
 
-        <n-card :bordered="false" class="panel dock-card" :class="{ open: taskList.open }" size="small" style="margin-top:20px;">
+        <n-card :bordered="false" class="panel dock-card" :class="{ open: taskList.open }" content-class="dock-content" size="small" style="margin-top:20px;">
           <n-space justify="space-between" align="center">
             <n-button text style="font-size:.95em;font-weight:600;" @click="toggleTaskList">
               <a-icon name="list" size="15" style="margin-right:7px;color:#14b8a6;"></a-icon>任务历史

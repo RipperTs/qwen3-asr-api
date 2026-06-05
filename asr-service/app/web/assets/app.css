@@ -70,19 +70,22 @@ body.dark .iconbtn:hover { background: rgba(45, 212, 191, .12); color: #2dd4bf; 
   .appbar-inner { gap: 14px; }
   .brand span { display: none; }
 }
-/* —— 满高布局（桌面端）：页面不滚动，工作区撑满视口，底部 dock 收起一行/展开占 1/3 —— */
+/* —— 满高布局（桌面端，仅 body.app-fullh 的转写两页；文档页保持文档流滚动）——
+ * 页面不滚动，工作区撑满视口，底部 dock 收起一行/展开占 1/3。
+ * .panel-body / .dock-content 经 n-card 的 content-class 注入（公开 API），
+ * 不依赖 Naive 内部类名 .n-card-content（库升级改名会静默塌陷）。 */
 @media (min-width: 961px) {
-  body { overflow: hidden; }
-  .container { height: calc(100vh - 57px); padding-top: 20px; padding-bottom: 20px; }  /* 57 = 应用栏 56 + 1px 底边框 */
+  body.app-fullh { overflow: hidden; }
+  .app-fullh .container { height: calc(100vh - 57px); padding-top: 20px; padding-bottom: 20px; }  /* 57 = 应用栏 56 + 1px 底边框 */
   .page-flex { height: 100%; display: flex; flex-direction: column; }
   .workspace { flex: 1; min-height: 0; }
   .side-col { max-height: 100%; overflow: auto; }
   .main-col { height: 100%; }
   .main-col .panel { height: 100%; display: flex; flex-direction: column; }
-  .main-col .panel > .n-card-content { flex: 1; min-height: 0; overflow: auto; }
+  .main-col .panel > .panel-body { flex: 1; min-height: 0; overflow: auto; }
   #transcript { height: 100%; overflow: auto; }
   .dock-card.open { flex: 0 0 33%; min-height: 0; display: flex; flex-direction: column; }
-  .dock-card.open > .n-card-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .dock-card.open > .dock-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .dock-body { flex: 1; min-height: 0; overflow: auto; }
   .dock-card.open .proto-log { max-height: none; }
 }
@@ -162,3 +165,66 @@ body.dark .transcript-line .t { color: #94a3b8; }
 body.dark .proto-log .send { color: #60a5fa; }
 body.dark .proto-log .recv { color: #4ade80; }
 body.dark .proto-log .evt { color: #fbbf24; }
+
+/* —— 文档中心（服务端渲染 Markdown，外壳走 Studio Console）—— */
+.docs-layout { display: flex; gap: 20px; align-items: flex-start; }
+.docs-sidebar {
+  flex: 0 0 220px; position: sticky; top: 77px;   /* 应用栏 57 + 容器上留白 20 */
+  display: flex; flex-direction: column; gap: 2px;
+  border-radius: 12px; padding: 10px; background: #fff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .07);
+}
+body.dark .docs-sidebar { background: #16171c; box-shadow: none; border: 1px solid rgba(255, 255, 255, .06); }
+.docs-sidebar a { text-decoration: none; padding: 8px 12px; border-radius: 8px; color: #475569; font-size: .88em; }
+.docs-sidebar a:hover { background: rgba(20, 184, 166, .08); color: var(--accent-deep); }
+.docs-sidebar a.active { background: rgba(20, 184, 166, .12); color: var(--accent-deep); font-weight: 600; }
+body.dark .docs-sidebar a { color: #94a3b8; }
+body.dark .docs-sidebar a:hover, body.dark .docs-sidebar a.active { color: #2dd4bf; }
+
+.markdown-body {
+  flex: 1; min-width: 0; border-radius: 12px; padding: 32px 40px;
+  background: #fff; box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .07);
+  line-height: 1.7; font-size: .95em; color: #334155;
+}
+body.dark .markdown-body { background: #16171c; box-shadow: none; border: 1px solid rgba(255, 255, 255, .06); color: #cbd5e1; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 { color: #0f172a; }
+body.dark .markdown-body h1, body.dark .markdown-body h2,
+body.dark .markdown-body h3, body.dark .markdown-body h4 { color: #e2e8f0; }
+.markdown-body h1 { font-size: 1.7em; padding-bottom: .3em; border-bottom: 1px solid #e2e8f0; margin-bottom: 16px; }
+.markdown-body h2 { font-size: 1.35em; padding-bottom: .3em; border-bottom: 1px solid #e2e8f0; margin: 28px 0 12px; }
+body.dark .markdown-body h1, body.dark .markdown-body h2 { border-bottom-color: rgba(255, 255, 255, .09); }
+.markdown-body h3 { font-size: 1.12em; margin: 22px 0 10px; }
+.markdown-body h4 { font-size: 1em; margin: 18px 0 8px; }
+.markdown-body p, .markdown-body ul, .markdown-body ol { margin-bottom: 12px; }
+.markdown-body ul, .markdown-body ol { padding-left: 1.8em; }
+.markdown-body li { margin-bottom: 4px; }
+.markdown-body a { color: var(--accent-deep); text-decoration: none; }
+.markdown-body a:hover { text-decoration: underline; }
+body.dark .markdown-body a { color: #2dd4bf; }
+.markdown-body code {
+  background: rgba(20, 184, 166, .08); padding: 2px 6px; border-radius: 4px;
+  font-family: var(--mono); font-size: .88em; color: #0f766e;
+}
+body.dark .markdown-body code { background: rgba(45, 212, 191, .1); color: #5eead4; }
+.markdown-body pre { background: #0f172a; color: #e2e8f0; padding: 14px 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 14px; }
+body.dark .markdown-body pre { background: #0b0c10; border: 1px solid rgba(255, 255, 255, .07); }
+.markdown-body pre code { background: none; padding: 0; color: inherit; font-size: .86em; }
+.markdown-body table { border-collapse: collapse; width: 100%; margin-bottom: 14px; display: block; overflow-x: auto; }
+.markdown-body th, .markdown-body td { border: 1px solid #e2e8f0; padding: 8px 12px; text-align: left; }
+.markdown-body th { background: #f8fafc; font-weight: 600; }
+body.dark .markdown-body th, body.dark .markdown-body td { border-color: rgba(255, 255, 255, .09); }
+body.dark .markdown-body th { background: rgba(255, 255, 255, .04); }
+.markdown-body blockquote {
+  border-left: 4px solid rgba(20, 184, 166, .45); background: #f8fafc;
+  padding: 8px 14px; color: #64748b; margin-bottom: 12px; border-radius: 0 8px 8px 0;
+}
+body.dark .markdown-body blockquote { background: rgba(255, 255, 255, .03); color: #94a3b8; }
+.markdown-body blockquote p { margin-bottom: 0; }
+.markdown-body hr { border: none; border-top: 1px solid #e2e8f0; margin: 24px 0; }
+body.dark .markdown-body hr { border-top-color: rgba(255, 255, 255, .09); }
+.markdown-body img { max-width: 100%; }
+@media (max-width: 960px) {
+  .docs-layout { flex-direction: column; }
+  .docs-sidebar { position: static; flex: none; width: 100%; flex-direction: row; flex-wrap: wrap; }
+  .markdown-body { padding: 20px 16px; width: 100%; }
+}

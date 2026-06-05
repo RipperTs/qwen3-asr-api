@@ -6,7 +6,7 @@
 (function () {
   'use strict';
   const { ref, reactive, computed, watch, onMounted, onBeforeUnmount } = Vue;
-  const { fmtMs, apiKey, mountApp } = window.AsrCommon;
+  const { fmtMs, fmtBytes, apiKey, mountApp } = window.AsrCommon;
 
   const RT_SR = 16000;
   const FRAME = 3200;                 // 200ms @16k
@@ -202,6 +202,14 @@
         };
       }
       function closeWs() { try { if (ws) ws.close(); } catch (e) { /* 已断开 */ } }
+      // stopping 阶段的逃生口：不等服务端排空末段，立即断开复位（服务端挂起时界面不至于锁死）
+      function forceClose() {
+        fileAborted = true;
+        closeWs();
+        cleanupMic();
+        streamState.value = 'idle';
+        statusText.value = '已断开';
+      }
 
       // —— 麦克风（AudioWorklet 外置文件）——
       let micCtx = null, micNode = null, micSrc = null, micStream = null;
@@ -336,17 +344,16 @@
         streamFile.value = item && item.file ? item.file : null;
         fileProgress.value = 0;
       }
-      const streamFileSize = computed(() =>
-        streamFile.value ? (streamFile.value.size / 1024 / 1024).toFixed(2) + ' MB' : ''
-      );
+      const streamFileSize = computed(() => (streamFile.value ? fmtBytes(streamFile.value.size) : ''));
 
       // —— 不限速流控：贴着服务端积压上限推，而非无脑全速（避免 backlog_overflow 断连）——
       // 预算 = session.created 下发的 max_backlog_bytes × 75%（留 25% 余量）；
       // 估算服务端未处理积压 = 已发字节 − max(实时消耗 32000B/s, final.end 反馈的已处理进度)，
       // 服务端处理快（GPU）则 final 反馈快、预算回填快，自动逼近其最大吞吐。
-      const DEFAULT_BACKLOG_BYTES = 8 * 1024 * 1024;
+      // 服务端恒在 session.created 下发 limits；缺失时用保守小预算兜底（不镜像服务端默认值，避免两端漂移）
+      const FALLBACK_BACKLOG_BYTES = 1024 * 1024;
       const BYTES_PER_SEC = RT_SR * 2;            // PCM16 单声道字节率
-      let backlogBudget = Math.floor(DEFAULT_BACKLOG_BYTES * 0.75);
+      let backlogBudget = Math.floor(FALLBACK_BACKLOG_BYTES * 0.75);
       let pushedBytes = 0, pushStartTs = 0, procEndMs = 0;
       function estBacklog() {
         const byTime = pushStartTs ? (performance.now() - pushStartTs) / 1000 * BYTES_PER_SEC : 0;
@@ -435,7 +442,7 @@
         logs, logOpen, logRef,
         streamFile, streamFileList, streamFileSize, onStreamUploadChange,
         noThrottle, fileProgress, fileRunning,
-        startMic, stopMic, startFile, stopFile,
+        startMic, stopMic, startFile, stopFile, forceClose,
       };
     },
     template: `
@@ -467,8 +474,8 @@
                     <n-button v-if="!busy" id="micStart" type="primary" size="large" block strong @click="startMic">
                       <a-icon name="mic" size="15" style="margin-right:7px;"></a-icon>开始录音
                     </n-button>
-                    <n-button v-else type="error" size="large" block strong :disabled="streamState === 'stopping'" @click="stopMic">
-                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>停止录音
+                    <n-button v-else type="error" size="large" block strong @click="streamState === 'stopping' ? forceClose() : stopMic()">
+                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>{{ streamState === 'stopping' ? '强制断开' : '停止录音' }}
                     </n-button>
                     <canvas ref="vuRef" class="vu-canvas" width="300" height="12"></canvas>
                     <n-text depth="3" style="font-size:.78em;">点击后授权麦克风，边说边转写。</n-text>
@@ -493,8 +500,8 @@
                     <n-button v-if="!busy && !fileRunning" type="primary" size="large" block strong @click="startFile">
                       <a-icon name="play" size="15" style="margin-right:7px;"></a-icon>开始模拟推流
                     </n-button>
-                    <n-button v-else type="error" size="large" block strong :disabled="streamState === 'stopping'" @click="stopFile">
-                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>停止
+                    <n-button v-else type="error" size="large" block strong @click="streamState === 'stopping' ? forceClose() : stopFile()">
+                      <a-icon name="stop" size="15" style="margin-right:7px;"></a-icon>{{ streamState === 'stopping' ? '强制断开' : '停止' }}
                     </n-button>
                     <n-progress v-if="fileRunning || fileProgress > 0" type="line" :percentage="fileProgress" :height="8" :border-radius="4" :show-indicator="false"></n-progress>
                     <n-text depth="3" style="font-size:.74em;line-height:1.6;">
@@ -508,7 +515,7 @@
           </div>
 
           <div class="main-col">
-            <n-card :bordered="false" class="panel" size="small">
+            <n-card :bordered="false" class="panel" content-class="panel-body" size="small">
               <template #header><span class="panel-title"><a-icon name="doc" size="15"></a-icon>转写结果</span></template>
               <div id="transcript" ref="transcriptRef">
                 <n-empty v-if="!finals.length && !partial" description="等待音频输入…" size="small" style="margin:24px 0;"></n-empty>
@@ -522,7 +529,7 @@
           </div>
         </div>
 
-        <n-card :bordered="false" class="panel dock-card" :class="{ open: logOpen }" size="small" style="margin-top:20px;">
+        <n-card :bordered="false" class="panel dock-card" :class="{ open: logOpen }" content-class="dock-content" size="small" style="margin-top:20px;">
           <n-space justify="space-between" align="center">
             <n-button text style="font-size:.95em;font-weight:600;" @click="logOpen = !logOpen">
               <a-icon name="doc" size="15" style="margin-right:7px;color:#14b8a6;"></a-icon>协议日志

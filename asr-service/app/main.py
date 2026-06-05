@@ -33,50 +33,53 @@ def parse_args(argv=None):
     return merge_runtime_config(cli_ns)
 
 
-# 生效配置打印的分组（不在表内的新 schema 键自动落入"其他"组，不会漏打）
-_CONFIG_GROUPS = (
-    ("服务", ("serve_mode", "host", "port", "api_key", "web")),
-    ("模型", ("device", "model_size", "enable_align", "use_punc", "model_source")),
-    ("离线任务", ("max_segment", "max_queue_size", "enable_task_store",
-                  "task_db_path", "task_retention_days")),
-    ("实时转写", ("enable_stream", "max_stream_sessions", "stream_asr_concurrency")),
-)
+# 值为 None 时回填的 cfg 真实默认值（"生效配置"不应打"(未指定)"误导成未生效）
+_CFG_FALLBACK_ATTRS = {
+    "host": "HOST", "port": "PORT", "max_queue_size": "MAX_QUEUE_SIZE",
+    "max_stream_sessions": "MAX_STREAM_SESSIONS",
+    "stream_asr_concurrency": "STREAM_ASR_CONCURRENCY",
+}
 
 
 def _log_effective_config(args):
     """启动时打印生效配置（四层合并结果），便于核对实际运行参数；api_key 脱敏。
 
+    分组随 ArgSpec.group 声明走（新参数在定义处即归组）；None 值回填 cfg
+    真实默认值并标注"(默认)"，model_size 标注"(自动选择)"（装配时按显存解析，
+    结果见后续"运行配置"日志行）。
     输出只用 ASCII 字符（=/-/.）做边框与点线对齐——框线字符（─│┌）在部分
     控制台字体/缩放下半宽全宽不一致会走样，这里刻意避开。
     """
-    specs = {s.key: s for s in ARG_SPECS}
-
-    def fmt(key):
-        val = getattr(args, specs[key].attr, None)
-        if key == "api_key" and val:
+    def fmt(spec):
+        val = getattr(args, spec.attr, None)
+        if spec.key == "api_key" and val:
             val = (val[:4] + "****") if len(val) > 4 else "****"
         if val is None:
-            val = "(未指定)"
-        dots = "." * max(2, 25 - len(key))
-        return f"    {key} {dots} {val}"
+            if spec.key in _CFG_FALLBACK_ATTRS:
+                val = f"{getattr(cfg, _CFG_FALLBACK_ATTRS[spec.key])} (默认)"
+            elif spec.key == "model_size":
+                val = "(自动选择)"
+            else:
+                val = "(未指定)"
+        dots = "." * max(2, 25 - len(spec.key))
+        return f"    {spec.key} {dots} {val}"
+
+    groups = {}
+    order = []
+    for spec in ARG_SPECS:
+        if spec.group not in groups:
+            groups[spec.group] = []
+            order.append(spec.group)
+        groups[spec.group].append(spec)
 
     bar = "=" * 62
     lines = ["", bar,
              "  Qwen3-ASR 生效配置（默认值 < 环境变量 < 配置文件 < CLI）",
              f"  配置文件: {cfg.CONFIG_FILE or '未使用'}",
              "-" * 62]
-    seen = set()
-    for title, keys in _CONFIG_GROUPS:
-        group = [k for k in keys if k in specs]
-        if not group:
-            continue
+    for title in order:
         lines.append(f"  [{title}]")
-        lines.extend(fmt(k) for k in group)
-        seen.update(group)
-    rest = [s.key for s in ARG_SPECS if s.key not in seen]
-    if rest:
-        lines.append("  [其他]")
-        lines.extend(fmt(k) for k in rest)
+        lines.extend(fmt(s) for s in groups[title])
     lines.append(bar)
     logger.info("\n".join(lines))
 

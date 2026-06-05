@@ -23,6 +23,11 @@ window.AsrCommon = (function () {
     return iso ? iso.replace('T', ' ').substring(0, 19) : '--';
   }
 
+  /* 字节数 → "x.xx MB"（文件大小展示） */
+  function fmtBytes(n) {
+    return (n / 1024 / 1024).toFixed(2) + ' MB';
+  }
+
   /* —— 共享 API Key（两页共用 localStorage 键 asr_api_key，应用栏 popover 中编辑）—— */
   const apiKey = ref(localStorage.getItem('asr_api_key') || '');
   watch(apiKey, v => localStorage.setItem('asr_api_key', v.trim()));
@@ -62,14 +67,15 @@ window.AsrCommon = (function () {
     },
   };
 
-  /* 构造页面根组件：主题（跟随系统 + 手动循环，localStorage 记忆）+ 应用栏状态
-   * （服务状态点 / API Key popover / 主题按钮），in-DOM 根模板直接使用其返回值。 */
+  /* 构造页面根组件：主题（默认亮色 + 手动循环，localStorage 记忆）+ 应用栏状态
+   * （服务状态点 / API Key popover / 主题按钮），in-DOM 根模板直接使用其返回值。
+   * AppBody 可省略（如文档页：正文为服务端渲染 HTML，全部内容都在 in-DOM 模板里）。 */
   function makeRoot(AppBody) {
     return {
-      components: { 'app-body': AppBody },
+      components: AppBody ? { 'app-body': AppBody } : {},
       setup() {
         const osTheme = naive.useOsTheme();
-        const themeMode = ref(localStorage.getItem('asr_theme') || 'auto'); // auto | light | dark
+        const themeMode = ref(localStorage.getItem('asr_theme') || 'light'); // light | dark | auto，默认亮色
         const isDark = computed(() => (themeMode.value === 'auto' ? osTheme.value === 'dark' : themeMode.value === 'dark'));
         const theme = computed(() => (isDark.value ? naive.darkTheme : null));
         watch(isDark, v => document.body.classList.toggle('dark', v), { immediate: true });
@@ -121,5 +127,5 @@ window.AsrCommon = (function () {
     app.mount('#app');
   }
 
-  return { fmtTime, fmtMs, fmtDate, apiKey, authHeaders, mountApp };
+  return { fmtTime, fmtMs, fmtDate, fmtBytes, apiKey, authHeaders, mountApp };
 })();
