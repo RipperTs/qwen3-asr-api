@@ -48,6 +48,7 @@ class FinalMsg(BaseModel):
     start: int | None = None
     end: int | None = None
     words: list | None = None          # 仅 word_timestamps=true（路线 B 启用对齐）
+    speaker: str | None = None         # 仅 speaker_labels=true（匿名标签 A/B/C…）
 
 
 class ErrorMsg(BaseModel):

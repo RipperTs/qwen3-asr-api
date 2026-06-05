@@ -24,10 +24,12 @@ class ASRPipeline:
         asr_engine,
         vad_engine: VADEngine,
         punc_engine: PuncEngine | None = None,
+        speaker_engine=None,
     ):
         self.asr = asr_engine
         self.vad = vad_engine
         self.punc = punc_engine
+        self.speaker = speaker_engine
 
     def run(
         self,
@@ -46,6 +48,7 @@ class ASRPipeline:
         2. 超长 segment 二次切分
         3. ASR 识别
         4. 标点恢复（可选）
+        4.5 说话人分离（可选，进度 0.90→0.95）
         5. 合并结果，回算绝对时间戳
         6. 清理临时文件
         """
@@ -80,13 +83,16 @@ class ASRPipeline:
 
             if not vad_segments:
                 logger.info(f"VAD 未检测到语音段: {audio_path}")
-                return {
+                result = {
                     "segments": [],
                     "full_text": "",
                     "language": language,
                     "align_enabled": self.asr.align_enabled,
                     "punc_enabled": self.punc is not None,
                 }
+                if self.speaker is not None:
+                    result["speakers"] = []
+                return result
 
             # 2. 合并相邻 VAD 段 + 切分写入 chunk 文件
             chunks = self._split_segments_to_chunks(wav_path, vad_segments, chunk_dir)
@@ -120,6 +126,27 @@ class ASRPipeline:
                             logger.warning(f"标点恢复失败，使用原始文本: {e}")
                 logger.info(f"[Pipeline] 标点恢复完成: {punc_count}/{len(segments)} 个段落有变化")
 
+            # 4.5 说话人分离（可选；容错对齐标点：失败只丢标签，不破坏转写）
+            speakers_in_order = None
+            if self.speaker is not None and segments and not (cancelled and cancelled()):
+                if progress_callback:
+                    progress_callback(0.90)
+                try:
+                    diar = self._run_diarization(wav_path, vad_segments)
+                    for seg in segments:
+                        label = diar.label_for(seg["start"], seg["end"])
+                        if label is not None:
+                            seg["speaker"] = label
+                    speakers_in_order = diar.labels_in_order
+                    logger.info(
+                        f"[Pipeline] 说话人分离完成: {len(speakers_in_order)} 人 "
+                        f"{speakers_in_order}"
+                    )
+                except Exception as e:
+                    logger.warning(f"说话人分离失败，跳过: {e}")
+                if progress_callback:
+                    progress_callback(0.95)
+
             # 5. 合并全文
             full_text = "".join(
                 seg["text"] for seg in segments
@@ -129,13 +156,16 @@ class ASRPipeline:
             if progress_callback:
                 progress_callback(1.0)
 
-            return {
+            result = {
                 "segments": segments,
                 "full_text": full_text,
                 "language": language,
                 "align_enabled": self.asr.align_enabled,
                 "punc_enabled": self.punc is not None,
             }
+            if speakers_in_order is not None:
+                result["speakers"] = speakers_in_order
+            return result
 
         finally:
             # 6. 清理临时文件
@@ -272,6 +302,32 @@ class ASRPipeline:
             if progress_callback:
                 progress_callback(0.1 + 0.8 * (i + 1) / total_chunks)
         return segments
+
+    def _run_diarization(self, wav_path: str, vad_segments: list[tuple[int, int]]):
+        """说话人分离：原始 VAD 段（合并前）滑窗 → embedding → 全局聚类。
+
+        返回 DiarizationResult（label_for 投票 + clusters 衔接面，声纹库 V 系列用）。
+        延迟导入：speaker 关闭时本模块零额外依赖。
+        """
+        from app.engines.speaker_embedding_engine import make_windows
+        from app.runtime.speaker_cluster import DiarizationResult, cluster_offline
+
+        windows: list[tuple[float, float]] = []
+        for start_ms, end_ms in vad_segments:
+            windows.extend(make_windows(start_ms / 1000.0, end_ms / 1000.0))
+        if not windows:
+            return DiarizationResult([], [], [])
+
+        # 窗数上限抽稀：规避超长音频谱聚类 N² 亲和阵内存
+        if len(windows) > cfg.SPEAKER_MAX_WINDOWS:
+            k = -(-len(windows) // cfg.SPEAKER_MAX_WINDOWS)
+            windows = windows[::k]
+            logger.info(f"[Pipeline] 说话人滑窗抽稀: 每 {k} 取 1 → {len(windows)} 窗")
+
+        wav, _sr = sf.read(wav_path, dtype="float32")  # 阶段 0 已保证 16k 单声道
+        embeddings = self.speaker.embed_windows(wav, windows)
+        labels = cluster_offline(embeddings, max_speakers=cfg.SPEAKER_MAX)
+        return DiarizationResult(windows, labels, embeddings)
 
     def _merge_vad_segments(
         self,

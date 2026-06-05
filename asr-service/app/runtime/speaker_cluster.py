@@ -149,14 +149,16 @@ def _spectral(embs: np.ndarray, max_spks: int,
 
 def _filter_minor_clusters(labels: np.ndarray, embs: np.ndarray,
                            min_cluster_size: int = MIN_CLUSTER_SIZE) -> np.ndarray:
-    """小簇（≤ min_cluster_size 窗）并入最近大簇；无大簇时全部归 0。"""
+    """小簇（≤ min_cluster_size 窗）并入最近大簇。
+
+    偏离上游：全员皆小簇（短音频，如 <8s 双人对话）时上游坍缩为单簇
+    （np.zeros_like），此处改为保持原标签——过滤的本意是抑噪，无主簇时不应抹平真簇。
+    """
     labels = labels.copy()
     uniq, counts = np.unique(labels, return_counts=True)
     major = uniq[counts > min_cluster_size]
-    if len(major) == len(uniq):
+    if len(major) == len(uniq) or len(major) == 0:
         return labels
-    if len(major) == 0:
-        return np.zeros_like(labels)
     centers = np.stack([embs[labels == c].mean(axis=0) for c in major])
     for i in np.where(~np.isin(labels, major))[0]:
         labels[i] = major[int(np.argmax(centers @ embs[i]))]
@@ -190,3 +192,71 @@ def _reorder_by_first_appearance(labels: np.ndarray) -> np.ndarray:
             mapping[lab] = len(mapping)
         out[i] = mapping[lab]
     return out
+
+
+class DiarizationResult:
+    """离线分离结果：窗标签 → ASR 段重叠加权投票；clusters 为声纹库 V 系列衔接面。
+
+    输入约定：windows 按时间顺序、labels 已首现重排（cluster_offline 出口保证）。
+    """
+
+    def __init__(self, windows: list[tuple[float, float]],
+                 labels: np.ndarray, embeddings: np.ndarray):
+        self._windows = list(windows)
+        self._labels = np.asarray(labels, dtype=int)
+        self._embs = np.asarray(embeddings)
+
+    def label_for(self, start: float, end: float) -> str | None:
+        """段 [start,end]（秒）与各窗的重叠时长加权投票；无重叠窗 → None。"""
+        votes: dict[int, float] = {}
+        for (wst, wed), lab in zip(self._windows, self._labels):
+            overlap = min(end, wed) - max(start, wst)
+            if overlap > 0:
+                votes[int(lab)] = votes.get(int(lab), 0.0) + overlap
+        if not votes:
+            return None
+        return speaker_label(max(votes, key=votes.get))  # 平票取先开口者（dict 插入序）
+
+    @property
+    def labels_in_order(self) -> list[str]:
+        """全部说话人标签，按首次开口顺序（如 ["A","B"]）。"""
+        if len(self._labels) == 0:
+            return []
+        return [speaker_label(i) for i in range(int(self._labels.max()) + 1)]
+
+    @property
+    def clusters(self) -> list[dict]:
+        """[{"label","centroid","dur_sec"}]：每簇 L2 归一质心 + 语音总时长。
+
+        dur_sec 为簇内窗时间区间的并集长度（滑窗重叠不重复计），
+        是声纹库自动登记质量门槛（≥ speaker_auto_enroll_min_sec）的依据。
+        """
+        out = []
+        n_clusters = int(self._labels.max()) + 1 if len(self._labels) else 0
+        for i in range(n_clusters):
+            idx = np.where(self._labels == i)[0]
+            centroid = self._embs[idx].mean(axis=0)
+            norm = float(np.linalg.norm(centroid))
+            if norm > 0:
+                centroid = centroid / norm
+            out.append({
+                "label": speaker_label(i),
+                "centroid": centroid,
+                "dur_sec": _union_duration([self._windows[j] for j in idx]),
+            })
+        return out
+
+
+def _union_duration(intervals: list[tuple[float, float]]) -> float:
+    """区间并集总长（秒）。"""
+    total, cur_st, cur_ed = 0.0, None, None
+    for st, ed in sorted(intervals):
+        if cur_ed is None or st > cur_ed:
+            if cur_ed is not None:
+                total += cur_ed - cur_st
+            cur_st, cur_ed = st, ed
+        else:
+            cur_ed = max(cur_ed, ed)
+    if cur_ed is not None:
+        total += cur_ed - cur_st
+    return total
