@@ -89,6 +89,13 @@ class OnlineSpeakerClusterer:
             return self._centroids[idx]
         return None
 
+    def count_of(self, label: str) -> int:
+        """按标签取质心累计段数（声纹识别会话缓存的失效依据：计数翻倍才重查）。"""
+        idx = _label_index(label)
+        if 0 <= idx < len(self._counts):
+            return self._counts[idx]
+        return 0
+
 
 # ─── 离线全局聚类 ───
 

@@ -42,7 +42,7 @@ class TaskManager:
         logger.info("任务工作线程和清理线程已启动")
 
     def submit(self, file_path: str, language: str | None = None,
-               wav_name: str | None = None) -> str:
+               wav_name: str | None = None, identify_speakers: bool = False) -> str:
         """提交任务，返回 task_id"""
         task_id = str(uuid.uuid4())
         task = {
@@ -52,6 +52,7 @@ class TaskManager:
             "file_path": file_path,
             "language": language,
             "wav_name": wav_name,
+            "identify_speakers": identify_speakers,
             "result": None,
             "error": None,
             "created_at": datetime.now().isoformat(),

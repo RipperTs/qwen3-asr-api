@@ -25,11 +25,13 @@ class ASRPipeline:
         vad_engine: VADEngine,
         punc_engine: PuncEngine | None = None,
         speaker_engine=None,
+        speaker_service=None,
     ):
         self.asr = asr_engine
         self.vad = vad_engine
         self.punc = punc_engine
         self.speaker = speaker_engine
+        self.speaker_service = speaker_service    # 声纹库联动（None = 未启用）
 
     def run(
         self,
@@ -38,6 +40,7 @@ class ASRPipeline:
         language: str | None = None,
         progress_callback=None,
         cancelled=None,
+        identify_speakers: bool = False,
     ) -> dict:
         """
         执行完整 ASR Pipeline。
@@ -127,23 +130,36 @@ class ASRPipeline:
                 logger.info(f"[Pipeline] 标点恢复完成: {punc_count}/{len(segments)} 个段落有变化")
 
             # 4.5 说话人分离（可选；容错对齐标点：失败只丢标签，不破坏转写）
-            speakers_in_order = None
+            speakers_result = None
             if self.speaker is not None and segments and not (cancelled and cancelled()):
                 if progress_callback:
                     progress_callback(0.90)
+                diar = None
                 try:
                     diar = self._run_diarization(wav_path, vad_segments)
                     for seg in segments:
                         label = diar.label_for(seg["start"], seg["end"])
                         if label is not None:
                             seg["speaker"] = label
-                    speakers_in_order = diar.labels_in_order
+                    speakers_result = diar.labels_in_order
                     logger.info(
-                        f"[Pipeline] 说话人分离完成: {len(speakers_in_order)} 人 "
-                        f"{speakers_in_order}"
+                        f"[Pipeline] 说话人分离完成: {len(speakers_result)} 人 "
+                        f"{speakers_result}"
                     )
                 except Exception as e:
                     logger.warning(f"说话人分离失败，跳过: {e}")
+                # 4.6 声纹识别 + 自动登记（可选）：speakers 升级为带 speaker_id/name 的
+                # 映射表；map_and_enroll_clusters 永不抛错（失败退回匿名）
+                if identify_speakers and self.speaker_service is not None and diar is not None:
+                    mapping = self.speaker_service.map_and_enroll_clusters(diar.clusters)
+                    name_of = {m["label"]: m for m in mapping}
+                    for seg in segments:
+                        m = name_of.get(seg.get("speaker"))
+                        if m and m.get("name"):
+                            seg["speaker_name"] = m["name"]
+                    speakers_result = mapping
+                    named = sum(1 for m in mapping if m.get("name"))
+                    logger.info(f"[Pipeline] 声纹识别完成: {named}/{len(mapping)} 簇有名")
                 if progress_callback:
                     progress_callback(0.95)
 
@@ -163,8 +179,8 @@ class ASRPipeline:
                 "align_enabled": self.asr.align_enabled,
                 "punc_enabled": self.punc is not None,
             }
-            if speakers_in_order is not None:
-                result["speakers"] = speakers_in_order
+            if speakers_result is not None:
+                result["speakers"] = speakers_result
             return result
 
         finally:

@@ -51,8 +51,9 @@ def init_routes(task_manager, task_store=None):
 async def submit_asr(
     file: UploadFile = File(...),
     language: str | None = Form(None),
+    identify_speakers: bool = Form(False),
 ) -> ASRResponse:
-    """提交 ASR 任务"""
+    """提交 ASR 任务（identify_speakers=true 时对分离结果做声纹识别，需声纹库已启用）"""
     if _task_manager is None:
         raise HTTPException(status_code=503, detail="服务尚未就绪，请稍后重试")
 
@@ -96,6 +97,7 @@ async def submit_asr(
             file_path=save_path,
             language=language,
             wav_name=file.filename,
+            identify_speakers=identify_speakers,
         )
     except queue.Full:
         os.remove(save_path)

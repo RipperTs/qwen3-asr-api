@@ -384,3 +384,16 @@ def test_submit_passes_wav_name(make_client):
     client = make_client(task_manager=tm)
     client.post("/v1/asr", files={"file": ("voice.mp3", b"abc", "audio/mpeg")})
     assert tm.submit.call_args.kwargs["wav_name"] == "voice.mp3"
+
+
+def test_submit_identify_speakers_passthrough(make_client):
+    """identify_speakers Form 参数透传到 TaskManager.submit（默认 False）。"""
+    tm = MagicMock()
+    tm.submit.return_value = "tid-2"
+    client = make_client(task_manager=tm)
+    client.post("/v1/asr", files={"file": ("a.wav", b"abc", "audio/wav")},
+                data={"identify_speakers": "true"})
+    assert tm.submit.call_args.kwargs["identify_speakers"] is True
+
+    client.post("/v1/asr", files={"file": ("b.wav", b"abc", "audio/wav")})
+    assert tm.submit.call_args.kwargs["identify_speakers"] is False

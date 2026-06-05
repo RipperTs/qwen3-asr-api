@@ -242,33 +242,6 @@ def _assemble_standard(app: FastAPI, args) -> None:
             speaker_engine = None
     speaker_enabled = speaker_engine is not None
 
-    # 创建 Pipeline
-    pipeline = ASRPipeline(
-        asr_engine=asr_engine,
-        vad_engine=vad_engine,
-        punc_engine=punc_engine,
-        speaker_engine=speaker_engine,
-    )
-
-    # 任务持久化（可选）：建库失败只告警不中断启动（附属能力不拖垮主链路）
-    task_store = None
-    if getattr(args, "enable_task_store", False):
-        from app.runtime.task_store import TaskStore
-        db_path = args.task_db_path
-        if not os.path.isabs(db_path):
-            db_path = os.path.join(cfg.BASE_DIR, db_path)
-        try:
-            task_store = TaskStore(db_path, retention_days=args.task_retention_days)
-            dangling = task_store.close_dangling()
-            if dangling:
-                logger.warning(f"上次退出时有 {dangling} 个未完成任务，已标记为失败（service restarted）")
-            expired = task_store.cleanup_expired()
-            if expired:
-                logger.info(f"已清理 {expired} 个过期历史任务（>{args.task_retention_days} 天）")
-        except Exception as e:
-            logger.error(f"任务持久化初始化失败，本次以纯内存模式运行: {e}")
-            task_store = None
-
     # 声纹库（可选）：降级矩阵按序检查，任一失败 = ERROR 日志 + 模块关闭、服务继续启动
     speaker_service = None
     speaker_store = None
@@ -301,6 +274,36 @@ def _assemble_standard(app: FastAPI, args) -> None:
                 speaker_service = None
                 speaker_store = None
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
+    # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
+    linked_speaker_service = speaker_service if speaker_db_enabled else None
+
+    # 创建 Pipeline
+    pipeline = ASRPipeline(
+        asr_engine=asr_engine,
+        vad_engine=vad_engine,
+        punc_engine=punc_engine,
+        speaker_engine=speaker_engine,
+        speaker_service=linked_speaker_service,
+    )
+
+    # 任务持久化（可选）：建库失败只告警不中断启动（附属能力不拖垮主链路）
+    task_store = None
+    if getattr(args, "enable_task_store", False):
+        from app.runtime.task_store import TaskStore
+        db_path = args.task_db_path
+        if not os.path.isabs(db_path):
+            db_path = os.path.join(cfg.BASE_DIR, db_path)
+        try:
+            task_store = TaskStore(db_path, retention_days=args.task_retention_days)
+            dangling = task_store.close_dangling()
+            if dangling:
+                logger.warning(f"上次退出时有 {dangling} 个未完成任务，已标记为失败（service restarted）")
+            expired = task_store.cleanup_expired()
+            if expired:
+                logger.info(f"已清理 {expired} 个过期历史任务（>{args.task_retention_days} 天）")
+        except Exception as e:
+            logger.error(f"任务持久化初始化失败，本次以纯内存模式运行: {e}")
+            task_store = None
 
     # 创建任务管理器
     task_manager = TaskManager(max_queue_size=cfg.MAX_QUEUE_SIZE, store=task_store)
@@ -315,6 +318,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
             language=task.get("language"),
             progress_callback=on_progress,
             cancelled=lambda: task_manager.is_stopping or task_manager.is_cancelled(task["task_id"]),
+            identify_speakers=task.get("identify_speakers", False),
         )
 
     task_manager.set_processor(process_task)
@@ -378,6 +382,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
         stream_backend = VadOfflineBackend(
             asr_engine, vad_engine, punc_engine,
             speaker=speaker_engine,
+            speaker_service=linked_speaker_service,
             max_sessions=cfg.MAX_STREAM_SESSIONS,
             asr_concurrency=cfg.STREAM_ASR_CONCURRENCY,
             max_segment_sec=cfg.STREAM_MAX_SEGMENT_SEC,

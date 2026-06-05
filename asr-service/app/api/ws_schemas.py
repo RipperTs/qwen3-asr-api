@@ -16,6 +16,7 @@ class StartMsg(BaseModel):
     audio_fs: int = 16000
     language: str | None = None
     wav_name: str = "stream"
+    identify_speakers: bool = False    # 声纹识别（需 speaker_identification 能力）
 
 
 class StopMsg(BaseModel):
@@ -49,6 +50,7 @@ class FinalMsg(BaseModel):
     end: int | None = None
     words: list | None = None          # 仅 word_timestamps=true（路线 B 启用对齐）
     speaker: str | None = None         # 仅 speaker_labels=true（匿名标签 A/B/C…）
+    speaker_name: str | None = None    # 仅 identify_speakers=true 且声纹库命中（以最新 final 为准）
 
 
 class ErrorMsg(BaseModel):
