@@ -29,7 +29,7 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
-| `--serve-mode` | `standard` / `vllm` | `standard` | Serving mode; `vllm` is a Phase 3 placeholder, not implemented yet (only /health and /capabilities) |
+| `--serve-mode` | `standard` / `vllm` | `standard` | Serving mode; `vllm` is a placeholder, not implemented yet (only /health and /capabilities) |
 | `--device` | `auto` / `cuda` / `cpu` | `auto` | Device; `auto` detects (≥6GB VRAM → 1.7B, 4–6GB → 0.6B, <4GB disables alignment, no GPU falls back to CPU/OpenVINO) |
 | `--model-size` | `0.6b` / `1.7b` | Auto by VRAM | ASR model size |
 | `--enable-align` / `--no-align` | - | Enabled | Alignment model (word-level timestamps); force-disabled in CPU mode |
@@ -79,7 +79,7 @@ Reduces false triggers from far-field sounds and ambient noise. `--vad-speech-no
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
 | `--enable-speaker` / `--no-speaker` | - | Disabled | Speaker diarization: offline `segments[].speaker` / real-time `final.speaker` (anonymous A/B/C…); the CAM++ model (28MB) is auto-downloaded on first use and runs on CPU without consuming VRAM |
-| `--speaker-threshold` | 0–1 | `0.5` | Online clustering cosine threshold for real-time (usable range observed at 0.35–0.65; higher splits speakers more aggressively, lower merges them more aggressively) |
+| `--speaker-threshold` | 0–1 | `0.5` | Online clustering cosine threshold for real-time (recommended range 0.35–0.65; higher splits speakers more aggressively, lower merges them more aggressively) |
 | `--speaker-max` | Number | `8` | Upper bound on speaker count (hard cap in real-time; upper bound of the cluster-count search in offline spectral clustering) |
 | `--speaker-min-seg-ms` | Milliseconds | `1500` | Real-time short-segment gate: segments shorter than this neither create a new cluster nor update a centroid (voiceprint features only stabilize at ≥1.5s) |
 | `--speaker-max-windows` | Number | `4000` | Upper bound on offline sliding windows; the excess is uniformly subsampled (memory guard for clustering very long audio) |

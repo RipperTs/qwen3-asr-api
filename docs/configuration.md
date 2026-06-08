@@ -29,7 +29,7 @@
 
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--serve-mode` | `standard` / `vllm` | `standard` | 运行模式；`vllm` 为 Phase 3 占位，暂未实现（仅提供 /health /capabilities） |
+| `--serve-mode` | `standard` / `vllm` | `standard` | 运行模式；`vllm` 为占位，暂未实现（仅提供 /health /capabilities） |
 | `--device` | `auto` / `cuda` / `cpu` | `auto` | 运行设备，`auto` 自动检测（≥6GB 显存选 1.7B，4–6GB 选 0.6B，<4GB 关对齐，无 GPU 回退 CPU/OpenVINO） |
 | `--model-size` | `0.6b` / `1.7b` | 按显存自动选择 | ASR 模型大小 |
 | `--enable-align` / `--no-align` | - | 开启 | 对齐模型（单词级时间戳）；CPU 模式强制关闭 |
@@ -79,7 +79,7 @@
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--enable-speaker` / `--no-speaker` | - | 关闭 | 说话人分离：离线 `segments[].speaker` / 实时 `final.speaker`（匿名 A/B/C…）；CAM++ 模型 28MB 首次自动下载，CPU 推理不占显存 |
-| `--speaker-threshold` | 0–1 | `0.5` | 实时在线归簇余弦阈值（实测可用区间 0.35–0.65；调高更易分人、调低更易并人） |
+| `--speaker-threshold` | 0–1 | `0.5` | 实时在线归簇余弦阈值（推荐区间 0.35–0.65；调高更易分人、调低更易并人） |
 | `--speaker-max` | 数字 | `8` | 说话人数上限（实时硬上限；离线谱聚类簇数搜索上界） |
 | `--speaker-min-seg-ms` | 毫秒 | `1500` | 实时短段门槛：短于此的段不建新簇/不更新质心（声纹特征在 ≥1.5s 才稳定） |
 | `--speaker-max-windows` | 数字 | `4000` | 离线滑窗数上限，超出均匀抽稀（超长音频聚类内存防护） |

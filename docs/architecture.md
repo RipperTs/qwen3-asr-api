@@ -82,7 +82,7 @@ asr-service/
                                                  → BPE decode
 ```
 
-**实时转写（路线 B，`WS /v2/asr/stream`）：**
+**实时转写（`WS /v2/asr/stream`）：**
 
 ```
 客户端音频帧(PCM16) → 在线VAD分块检测(200ms) → 语音段切分 → 内存离线解码(复用ASR引擎) → final 逐句下发
