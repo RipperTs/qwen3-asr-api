@@ -75,9 +75,12 @@ class ASRPipeline:
             warnings.append("with_words")
         if opts.get("diarize") is True and self.speaker is None:
             warnings.append("diarize")
-        if identify_speakers and self.speaker_service is None:
+        # 声纹识别真正能跑的前提：声纹库 + 说话人引擎 + diarize 同时就位（diarize 关时
+        # 不聚类，identify/id 阈值全部失效）——任一缺失即软提示，避免静默丢弃
+        spk_id_ready = self.speaker_service is not None and self.speaker is not None and diarize
+        if identify_speakers and not spk_id_ready:
             warnings.append("identify_speakers")
-        if (id_threshold is not None or id_margin is not None) and self.speaker_service is None:
+        if (id_threshold is not None or id_margin is not None) and not spk_id_ready:
             warnings.append("speaker_id_threshold/margin")
 
         try:
@@ -115,7 +118,7 @@ class ASRPipeline:
                     "align_enabled": self.asr.align_enabled,
                     "punc_enabled": self.punc is not None,
                 }
-                if self.speaker is not None:
+                if self.speaker is not None and diarize:
                     result["speakers"] = []
                 if warnings:
                     result["warnings"] = warnings

@@ -98,6 +98,17 @@ def test_no_warnings_when_features_available():
     assert warnings == []
 
 
+def test_identify_with_diarize_off_warns_even_if_service_ready():
+    # 声纹库与说话人引擎都就位，但 diarize 关 → 不聚类，identify/id 阈值失效，须软提示
+    sess = _make_session(speaker=MagicMock(), speaker_service=MagicMock())
+    warnings = sess.configure({
+        "diarize": False, "identify_speakers": True, "speaker_id_threshold": 0.5,
+    })
+    assert sess._spk_cluster is None
+    assert "identify_speakers" in warnings
+    assert "speaker_id_threshold" in warnings
+
+
 def test_disable_toggle_never_warns():
     # 关闭类请求（with_punc=false）即使功能未加载也不应告警
     sess = _make_session()

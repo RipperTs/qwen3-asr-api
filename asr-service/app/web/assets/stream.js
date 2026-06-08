@@ -150,6 +150,9 @@
         maxEndSilence: null, maxSegmentSec: null,
         withPunc: true, withWords: true, diarize: true,   // 降级开关：默认开，关闭才下发 false
       });
+      // 关闭说话人分离时联动复位声纹识别——identify 依赖 diarize，否则会把 identify_speakers=true
+      // 与 diarize=false 一并下发，服务端静默丢弃，UI 却仍显示识别开启
+      watch(() => adv.diarize, (on) => { if (!on) identifySpeakers.value = false; });
       const warn = ref('');               // 非致命软提示（params_ignored）
       // 数值框占位：有服务端默认值时直接显示该值（留空即用此值），否则显示「默认」
       function ph(key) {
@@ -334,9 +337,9 @@
             appendFinal(m);
             partial.value = '';
           } else if (m.type === 'error') {
-            // params_ignored（功能未启用的覆盖项）为非致命软提示，单独展示，不当错误；
-            // 提取冒号后的参数列表，配合本地化前缀（warn.ignored）展示
-            if (m.code === 'params_ignored' || m.fatal === false) {
+            // 仅 params_ignored（功能未启用的覆盖项）为软提示，单独展示；其余 error
+            // （含非致命的 feed_failed 等）一律走错误提示，避免真实错误被伪装成警告
+            if (m.code === 'params_ignored') {
               const i = (m.message || '').indexOf(': ');
               warn.value = i >= 0 ? m.message.slice(i + 2) : (m.message || '');
             } else {

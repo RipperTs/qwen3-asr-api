@@ -22,6 +22,17 @@ def test_detect_parses_pairs():
     assert eng.detect("x.wav") == [(100, 500), (600, 1200)]
 
 
+def test_detect_passes_max_end_silence_to_reset_leak():
+    # 离线 detect 须显式传 max_end_silence_time：流式会话经 init_cache 写入的共享 vad_opts
+    # 不会自动复位，离线不传则沿用上一个流式会话的遗留值导致段边界漂移
+    import app.config as cfg
+    eng = VADEngine()
+    eng._model = MagicMock()
+    eng._model.generate.return_value = [{"value": []}]
+    eng.detect("x.wav")
+    assert eng._model.generate.call_args.kwargs["max_end_silence_time"] == cfg.VAD_MAX_SILENCE
+
+
 def test_detect_ignores_non_pair_entries():
     eng = VADEngine()
     eng._model = MagicMock()

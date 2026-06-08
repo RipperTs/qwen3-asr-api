@@ -138,3 +138,16 @@ def test_identify_skipped_when_diarization_fails(run_env, tmp_path):
     result = pipe.run(str(tmp_path / "a.mp3"), "t1", identify_speakers=True)
     assert "speakers" not in result                    # 分离失败 → 降级一致
     assert service.calls == []                         # 不调用声纹服务
+
+
+def test_identify_with_diarize_off_warns_not_silent(run_env, tmp_path):
+    """diarize=false 时声纹库虽就位也无法识别（不聚类）——须软提示而非静默丢弃。"""
+    service = FakeSpeakerService()
+    pipe = _make_pipe(FakeSpeakerEngine(), service)
+    result = pipe.run(str(tmp_path / "a.mp3"), "t1", identify_speakers=True,
+                      options={"diarize": False, "speaker_id_threshold": 0.5})
+    assert "speakers" not in result
+    assert all("speaker_name" not in seg for seg in result["segments"])
+    assert service.calls == []                          # 未触达声纹库
+    assert "identify_speakers" in result["warnings"]
+    assert "speaker_id_threshold/margin" in result["warnings"]

@@ -237,10 +237,13 @@ class StreamSession:
                 ignored.append(k)
         if cfg_msg.get("diarize") is True and not spk_ok:
             ignored.append("diarize")
+        # 声纹识别真正能跑的前提：声纹库 + 说话人引擎 + diarize 同时就位（diarize 关时
+        # _spk_cluster 为 None，identify/id 阈值全部失效）——与离线管线判定保持一致
+        spk_id_ready = svc_ok and spk_ok and self._with_diarize
         for k in ("speaker_id_threshold", "speaker_id_margin"):
-            if cfg_msg.get(k) is not None and not svc_ok:
+            if cfg_msg.get(k) is not None and not spk_id_ready:
                 ignored.append(k)
-        if cfg_msg.get("identify_speakers") is True and not svc_ok:
+        if cfg_msg.get("identify_speakers") is True and not spk_id_ready:
             ignored.append("identify_speakers")
         if cfg_msg.get("with_words") is True and not self._enable_words:
             ignored.append("with_words")

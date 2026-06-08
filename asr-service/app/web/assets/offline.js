@@ -223,6 +223,9 @@
         withPunc: true, withWords: true, diarize: true,   // 降级开关：默认开，关闭才下发 false
         maxSegment: null, idThreshold: null, idMargin: null,
       });
+      // 关闭说话人分离时联动复位声纹识别——identify 依赖 diarize，否则会把 identify_speakers=true
+      // 与 diarize=false 一并下发，服务端静默丢弃，UI 却仍显示识别开启
+      watch(() => adv.diarize, (on) => { if (!on) identifySpeakers.value = false; });
       // 数值框占位：有服务端默认值时直接显示该值（留空即用此值），否则显示「默认」
       function ph(key) {
         const d = srv.defaults[key];

@@ -48,7 +48,11 @@ class VADEngine:
             raise RuntimeError("VAD 模型未加载，请先调用 load()")
 
         with self._infer_lock:
-            res = self._model.generate(input=audio_path)
+            # 显式传 max_end_silence_time：在线 StreamingVADEngine 的会话级覆盖经 init_cache
+            # 写入共享 vad_opts 后不会复位，离线若不传则沿用上一个流式会话的遗留值导致段边界漂移；
+            # 每次离线推理都以默认值重写，保证断句确定性（值同构造期默认，零行为变化）
+            res = self._model.generate(
+                input=audio_path, max_end_silence_time=cfg.VAD_MAX_SILENCE)
 
         segments = []
         if res and len(res) > 0 and res[0]:
