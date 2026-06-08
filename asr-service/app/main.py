@@ -347,6 +347,19 @@ def _assemble_standard(app: FastAPI, args) -> None:
             "word_timestamps": enable_align if stream_enabled else False,
             "speaker_labels": speaker_enabled if stream_enabled else False,
         },
+        # 可覆盖参数的当前生效默认值（反映实际配置，供 Web UI 占位提示）
+        "defaults": {
+            "max_segment": cfg.MAX_SEGMENT_DURATION,
+            "max_end_silence_ms": cfg.VAD_MAX_SILENCE,
+            "max_segment_sec": cfg.STREAM_MAX_SEGMENT_SEC,
+            "speaker_threshold": cfg.SPEAKER_THRESHOLD,
+            "speaker_min_seg_ms": cfg.SPEAKER_MIN_SEG_MS,
+            "speaker_max": cfg.SPEAKER_MAX,
+            "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
+            "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
+            "energy_floor_dbfs": cfg.STREAM_ENERGY_FLOOR_DBFS,
+            "snr_min_db": cfg.STREAM_SNR_MIN_DB,
+        },
     }
     service_info = {
         "status": "ready",

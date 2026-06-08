@@ -31,6 +31,15 @@
       // 输入源面板
       'panel.input': '输入源', 'input.langPlaceholder': '语言（默认 auto，如 zh / en）',
       'input.identify': '声纹识别（真名标注）',
+      // 高级设置（随 start 消息按会话覆盖）
+      'adv.title': '高级设置（可选覆盖）',
+      'adv.hint': '留空＝用服务端默认；关闭开关＝本次会话不执行该步骤。会话进行中不可改。',
+      'adv.farfield': '远场降噪', 'adv.noiseFilter': '段级降噪过滤', 'adv.energyFloor': '能量门 (dBFS)', 'adv.snrMin': '信噪比门 (dB)',
+      'adv.timing': '断句 / 分段', 'adv.endSilence': '断句尾静音 (ms)', 'adv.segmentSec': '长句切分 (秒)',
+      'adv.speaker': '说话人', 'adv.diarize': '说话人分离', 'adv.spkThreshold': '归簇阈值 (余弦 0.2–0.9)', 'adv.spkMinSeg': '短段门槛 (ms)', 'adv.spkMax': '说话人上限',
+      'adv.idThreshold': '识别阈值 (余弦 0–1)', 'adv.idMargin': '区分余量 (余弦 0–1)',
+      'adv.output': '输出内容', 'adv.punc': '标点恢复', 'adv.words': '词级时间戳', 'adv.default': '默认',
+      'warn.ignored': '部分参数因功能未启用被忽略：{0}',
       'tab.mic': '麦克风', 'tab.file': '文件模拟',
       // 麦克风
       'mic.start': '开始录音', 'mic.stop': '停止录音', 'mic.forceClose': '强制断开',
@@ -69,6 +78,14 @@
       'diag.unit.sample': 'samples', 'diag.unit.ms': 'ms',
       'panel.input': 'Input source', 'input.langPlaceholder': 'Language (default auto, e.g. zh / en)',
       'input.identify': 'Speaker identification (label real names)',
+      'adv.title': 'Advanced (optional overrides)',
+      'adv.hint': 'Empty = server default; turning a switch off skips that step. Locked while a session is active.',
+      'adv.farfield': 'Far-field denoise', 'adv.noiseFilter': 'Segment denoise gate', 'adv.energyFloor': 'Energy gate (dBFS)', 'adv.snrMin': 'SNR gate (dB)',
+      'adv.timing': 'Endpoint / segment', 'adv.endSilence': 'End silence (ms)', 'adv.segmentSec': 'Max segment (s)',
+      'adv.speaker': 'Speaker', 'adv.diarize': 'Speaker diarization', 'adv.spkThreshold': 'Cluster threshold (cosine 0.2–0.9)', 'adv.spkMinSeg': 'Min segment (ms)', 'adv.spkMax': 'Max speakers',
+      'adv.idThreshold': 'ID threshold (cosine 0–1)', 'adv.idMargin': 'ID margin (cosine 0–1)',
+      'adv.output': 'Output', 'adv.punc': 'Punctuation', 'adv.words': 'Word timestamps', 'adv.default': 'default',
+      'warn.ignored': 'Some params were ignored (feature not enabled): {0}',
       'tab.mic': 'Microphone', 'tab.file': 'File simulation',
       'mic.start': 'Start recording', 'mic.stop': 'Stop recording', 'mic.forceClose': 'Force disconnect',
       'mic.hint': 'Grant microphone access, then speak to transcribe live.',
@@ -125,6 +142,20 @@
       // —— 声纹识别（随 start 消息发送；capabilities 探测到 speaker_identification 才显示开关）——
       const canIdentify = ref(false);
       const identifySpeakers = ref(false);
+      // —— 高级设置：能力门控标志（precheck 填充）+ 按会话覆盖值（null=不下发，用服务端默认）——
+      const srv = reactive({ punc: false, words: false, speaker: false, speakerDb: false, defaults: {} });
+      const adv = reactive({
+        noiseFilter: false, energyFloor: null, snrMin: null,
+        spkThreshold: null, spkMinSeg: null, spkMax: null, idThreshold: null, idMargin: null,
+        maxEndSilence: null, maxSegmentSec: null,
+        withPunc: true, withWords: true, diarize: true,   // 降级开关：默认开，关闭才下发 false
+      });
+      const warn = ref('');               // 非致命软提示（params_ignored）
+      // 数值框占位：有服务端默认值时直接显示该值（留空即用此值），否则显示「默认」
+      function ph(key) {
+        const d = srv.defaults[key];
+        return d != null ? String(d) : t('adv.default');
+      }
 
       // —— 会话状态机：idle | connecting | streaming | stopping ——
       const streamState = ref('idle');
@@ -240,6 +271,23 @@
         const m = { type: 'start', audio_fs: RT_SR, wav_name: 'web-test' };
         if (l && l !== 'auto') m.language = l;
         if (identifySpeakers.value) m.identify_speakers = true;
+        // 远场降噪
+        if (adv.noiseFilter) m.noise_filter = true;
+        if (adv.energyFloor != null) m.energy_floor_dbfs = adv.energyFloor;
+        if (adv.snrMin != null) m.snr_min_db = adv.snrMin;
+        // 说话人
+        if (adv.spkThreshold != null) m.speaker_threshold = adv.spkThreshold;
+        if (adv.spkMinSeg != null) m.speaker_min_seg_ms = adv.spkMinSeg;
+        if (adv.spkMax != null) m.speaker_max = adv.spkMax;
+        if (adv.idThreshold != null) m.speaker_id_threshold = adv.idThreshold;
+        if (adv.idMargin != null) m.speaker_id_margin = adv.idMargin;
+        // 断句 / 分段
+        if (adv.maxEndSilence != null) m.max_end_silence_ms = adv.maxEndSilence;
+        if (adv.maxSegmentSec != null) m.max_segment_sec = adv.maxSegmentSec;
+        // 输出降级：仅功能已加载且用户关闭时下发 false（不下发＝沿用服务端默认）
+        if (srv.punc && adv.withPunc === false) m.with_punc = false;
+        if (srv.words && adv.withWords === false) m.with_words = false;
+        if (srv.speaker && adv.diarize === false) m.diarize = false;
         return m;
       }
       function waitDrain() {
@@ -252,6 +300,7 @@
       }
       function openWs(onReady) {
         hint.value = '';
+        warn.value = '';
         clearResults();
         pushedBytes = 0; pushStartTs = 0; procEndMs = 0;   // 流控状态按会话重置
         const t = apiKey.value.trim();
@@ -285,7 +334,14 @@
             appendFinal(m);
             partial.value = '';
           } else if (m.type === 'error') {
-            hint.value = t('err.code', m.code, m.message);
+            // params_ignored（功能未启用的覆盖项）为非致命软提示，单独展示，不当错误；
+            // 提取冒号后的参数列表，配合本地化前缀（warn.ignored）展示
+            if (m.code === 'params_ignored' || m.fatal === false) {
+              const i = (m.message || '').indexOf(': ');
+              warn.value = i >= 0 ? m.message.slice(i + 2) : (m.message || '');
+            } else {
+              hint.value = t('err.code', m.code, m.message);
+            }
           } else if (m.type === 'session.closed') {
             statusKey.value = 'sessionClosed'; statusDetail.value = '';
           }
@@ -522,10 +578,17 @@
       async function precheck() {
         try {
           const r = await fetch('/v2/capabilities');
-          if (!r.ok) return;
-          const c = await r.json();
-          canIdentify.value = !!c.speaker_identification;
-          streamDisabled.value = !(c.stream && c.stream.enabled);
+          if (r.ok) {
+            const c = await r.json();
+            canIdentify.value = !!c.speaker_identification;
+            streamDisabled.value = !(c.stream && c.stream.enabled);
+            srv.words = !!(c.stream && c.stream.word_timestamps);
+            srv.speaker = !!c.speaker_labels;
+            srv.speakerDb = !!c.speaker_identification;
+            srv.defaults = c.defaults || {};
+          }
+          const h = await fetch('/v2/health');     // punc 能力仅 health 暴露
+          if (h.ok) srv.punc = !!(await h.json()).punc_enabled;
         } catch (e) { /* 服务未起，忽略 */ }
       }
       onMounted(precheck);
@@ -538,7 +601,7 @@
 
       return {
         t,
-        lang, canIdentify, identifySpeakers,
+        lang, canIdentify, identifySpeakers, srv, adv, warn, ph,
         streamState, statusText, busy, source,
         capWarning, hint, capInfo, diag, vuRef,
         finals, partial, fmtMs, transcriptRef, spkIdx,
@@ -571,9 +634,39 @@
             <n-card :bordered="false" class="panel" size="small">
               <template #header><span class="panel-title"><a-icon name="mic" size="15"></a-icon>{{ t('panel.input') }}</span></template>
               <n-input v-model:value="lang" size="small" :placeholder="t('input.langPlaceholder')" style="margin-bottom:12px;"></n-input>
-              <n-checkbox v-if="canIdentify" v-model:checked="identifySpeakers" size="small" :disabled="busy" style="margin-bottom:12px;">
+              <n-checkbox v-if="canIdentify" v-model:checked="identifySpeakers" size="small" :disabled="busy || !adv.diarize" style="margin-bottom:12px;">
                 {{ t('input.identify') }}
               </n-checkbox>
+              <n-collapse style="margin-bottom:12px;">
+                <n-collapse-item :title="t('adv.title')" name="adv">
+                  <div class="adv-hint">{{ t('adv.hint') }}</div>
+                  <div class="sec-title">{{ t('adv.farfield') }}</div>
+                  <div class="adv-field"><span class="lbl">{{ t('adv.noiseFilter') }}</span><n-switch v-model:value="adv.noiseFilter" size="small" :disabled="busy"></n-switch></div>
+                  <template v-if="adv.noiseFilter">
+                    <div class="adv-field"><span class="lbl">{{ t('adv.energyFloor') }}</span><n-input-number v-model:value="adv.energyFloor" size="small" :min="-90" :max="0" clearable :placeholder="ph('energy_floor_dbfs')" :disabled="busy" style="width:128px;"></n-input-number></div>
+                    <div class="adv-field"><span class="lbl">{{ t('adv.snrMin') }}</span><n-input-number v-model:value="adv.snrMin" size="small" :min="0" :max="40" clearable :placeholder="ph('snr_min_db')" :disabled="busy" style="width:128px;"></n-input-number></div>
+                  </template>
+                  <div class="sec-title">{{ t('adv.timing') }}</div>
+                  <div class="adv-field"><span class="lbl">{{ t('adv.endSilence') }}</span><n-input-number v-model:value="adv.maxEndSilence" size="small" :min="200" :max="2000" :step="50" clearable :placeholder="ph('max_end_silence_ms')" :disabled="busy" style="width:128px;"></n-input-number></div>
+                  <div class="adv-field"><span class="lbl">{{ t('adv.segmentSec') }}</span><n-input-number v-model:value="adv.maxSegmentSec" size="small" :min="1" :max="60" clearable :placeholder="ph('max_segment_sec')" :disabled="busy" style="width:128px;"></n-input-number></div>
+                  <template v-if="srv.speaker">
+                    <div class="sec-title">{{ t('adv.speaker') }}</div>
+                    <div class="adv-field"><span class="lbl">{{ t('adv.diarize') }}</span><n-switch v-model:value="adv.diarize" size="small" :disabled="busy"></n-switch></div>
+                    <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.spkThreshold') }}</span><n-input-number v-model:value="adv.spkThreshold" size="small" :min="0.2" :max="0.9" :step="0.05" clearable :placeholder="ph('speaker_threshold')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
+                    <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.spkMinSeg') }}</span><n-input-number v-model:value="adv.spkMinSeg" size="small" :min="0" :max="10000" :step="100" clearable :placeholder="ph('speaker_min_seg_ms')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
+                    <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.spkMax') }}</span><n-input-number v-model:value="adv.spkMax" size="small" :min="1" :max="50" clearable :placeholder="ph('speaker_max')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
+                    <template v-if="srv.speakerDb">
+                      <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.idThreshold') }}</span><n-input-number v-model:value="adv.idThreshold" size="small" :min="0" :max="1" :step="0.05" clearable :placeholder="ph('speaker_id_threshold')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
+                      <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.idMargin') }}</span><n-input-number v-model:value="adv.idMargin" size="small" :min="0" :max="1" :step="0.05" clearable :placeholder="ph('speaker_id_margin')" :disabled="busy || !adv.diarize" style="width:128px;"></n-input-number></div>
+                    </template>
+                  </template>
+                  <template v-if="srv.punc || srv.words">
+                    <div class="sec-title">{{ t('adv.output') }}</div>
+                    <div v-if="srv.punc" class="adv-field"><span class="lbl">{{ t('adv.punc') }}</span><n-switch v-model:value="adv.withPunc" size="small" :disabled="busy"></n-switch></div>
+                    <div v-if="srv.words" class="adv-field"><span class="lbl">{{ t('adv.words') }}</span><n-switch v-model:value="adv.withWords" size="small" :disabled="busy"></n-switch></div>
+                  </template>
+                </n-collapse-item>
+              </n-collapse>
               <n-tabs v-model:value="source" type="segment" size="small">
                 <n-tab-pane name="mic" :tab="t('tab.mic')" :disabled="busy && source !== 'mic'">
                   <n-space vertical size="large" style="margin-top:12px;">
@@ -619,6 +712,7 @@
                 </n-tab-pane>
               </n-tabs>
               <n-alert v-if="hint" type="error" :show-icon="true" style="margin-top:12px;">{{ hint }}</n-alert>
+              <n-alert v-if="warn" type="warning" :show-icon="true" :bordered="false" style="margin-top:12px;">{{ t('warn.ignored', warn) }}</n-alert>
             </n-card>
           </div>
 

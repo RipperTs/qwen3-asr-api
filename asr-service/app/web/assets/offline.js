@@ -21,6 +21,13 @@
       'upload.title': '上传音频', 'upload.hint': '点击或拖拽上传音频文件',
       'upload.formats': 'wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus',
       'upload.identify': '声纹识别（标注真名，未知说话人自动登记）',
+      // 高级设置（可选按请求覆盖）
+      'adv.title': '高级设置（可选覆盖）',
+      'adv.hint': '留空＝用服务端默认；关闭开关＝本次不执行该步骤。',
+      'adv.output': '输出内容', 'adv.punc': '标点恢复', 'adv.words': '词级时间戳', 'adv.diarize': '说话人分离',
+      'adv.tuning': '分段与识别', 'adv.segment': '分段时长（秒）',
+      'adv.idThreshold': '识别阈值 (余弦 0–1)', 'adv.idMargin': '区分余量 (余弦 0–1)', 'adv.default': '默认',
+      'warn.ignored': '部分参数因功能未启用被忽略：{0}',
       // 识别动作
       'action.recognizing': '识别中…', 'action.start': '开始识别',
       'action.cancelling': '取消中…', 'action.cancel': '取消识别',
@@ -66,6 +73,12 @@
       'upload.title': 'Upload audio', 'upload.hint': 'Click or drag to upload an audio file',
       'upload.formats': 'wav / mp3 / flac / m4a / aac / ogg / wma / amr / opus',
       'upload.identify': 'Speaker identification (label real names, auto-enroll unknowns)',
+      'adv.title': 'Advanced (optional overrides)',
+      'adv.hint': 'Empty = server default; turning a switch off skips that step for this request.',
+      'adv.output': 'Output', 'adv.punc': 'Punctuation', 'adv.words': 'Word timestamps', 'adv.diarize': 'Speaker diarization',
+      'adv.tuning': 'Segment & identification', 'adv.segment': 'Segment length (s)',
+      'adv.idThreshold': 'ID threshold (cosine 0–1)', 'adv.idMargin': 'ID margin (cosine 0–1)', 'adv.default': 'default',
+      'warn.ignored': 'Some params were ignored (feature not enabled): {0}',
       'action.recognizing': 'Recognizing…', 'action.start': 'Start',
       'action.cancelling': 'Cancelling…', 'action.cancel': 'Cancel',
       'result.title': 'Result', 'result.failed': 'Recognition failed',
@@ -146,6 +159,9 @@
         <n-space v-if="metaTags.length" size="small" style="margin-bottom:14px;">
           <n-tag v-for="t in metaTags" :key="t" size="small" :bordered="false">{{ t }}</n-tag>
         </n-space>
+        <n-alert v-if="result.warnings && result.warnings.length" type="warning" size="small" :show-icon="true" :bordered="false" style="margin-bottom:14px;">
+          {{ t('warn.ignored', result.warnings.join(', ')) }}
+        </n-alert>
         <div class="sec-title">{{ t('result.segments') }}</div>
         <n-empty v-if="!segments.length" :description="t('result.noSegments')" size="small" style="margin:12px 0;"></n-empty>
         <div v-else>
@@ -201,11 +217,34 @@
       // —— 声纹识别（请求级 opt-in；capabilities 探测到 speaker_identification 才显示开关）——
       const canIdentify = ref(false);
       const identifySpeakers = ref(false);
+      // —— 高级设置门控标志（/v2/health）+ 按请求覆盖值（null=不下发，用服务端默认）——
+      const srv = reactive({ punc: false, align: false, speaker: false, speakerDb: false, defaults: {} });
+      const adv = reactive({
+        withPunc: true, withWords: true, diarize: true,   // 降级开关：默认开，关闭才下发 false
+        maxSegment: null, idThreshold: null, idMargin: null,
+      });
+      // 数值框占位：有服务端默认值时直接显示该值（留空即用此值），否则显示「默认」
+      function ph(key) {
+        const d = srv.defaults[key];
+        return d != null ? String(d) : t('adv.default');
+      }
       onMounted(async () => {
         try {
           const r = await fetch('/v2/capabilities');
-          if (r.ok) canIdentify.value = !!(await r.json()).speaker_identification;
+          if (r.ok) {
+            const c = await r.json();
+            canIdentify.value = !!c.speaker_identification;
+            srv.defaults = c.defaults || {};
+          }
         } catch (e) { /* 探测失败按不可用处理，开关保持隐藏 */ }
+        try {
+          const h = await fetch('/v2/health');
+          if (h.ok) {
+            const d = await h.json();
+            srv.punc = !!d.punc_enabled; srv.align = !!d.align_enabled;
+            srv.speaker = !!d.speaker_enabled; srv.speakerDb = !!d.speaker_db_enabled;
+          }
+        } catch (e) { /* 探测失败：高级开关保持隐藏，数值项仍可用 */ }
       });
 
       // —— 当前任务 ——
@@ -225,6 +264,13 @@
         const form = new FormData();
         form.append('file', selectedFile.value);
         if (identifySpeakers.value) form.append('identify_speakers', 'true');
+        // 降级开关：仅在功能已加载且用户关闭时下发 false（不下发＝沿用服务端默认）
+        if (srv.punc && adv.withPunc === false) form.append('with_punc', 'false');
+        if (srv.align && adv.withWords === false) form.append('with_words', 'false');
+        if (srv.speaker && adv.diarize === false) form.append('diarize', 'false');
+        if (adv.maxSegment != null) form.append('max_segment', String(adv.maxSegment));
+        if (adv.idThreshold != null) form.append('speaker_id_threshold', String(adv.idThreshold));
+        if (adv.idMargin != null) form.append('speaker_id_margin', String(adv.idMargin));
         try {
           const res = await fetch('/v2/asr', { method: 'POST', body: form, headers: authHeaders() });
           if (!res.ok) {
@@ -444,7 +490,7 @@
 
       return {
         uploadFileList, onUploadChange, fileSize, audioSrc, audioRef, selectedFile,
-        canIdentify, identifySpeakers,
+        canIdentify, identifySpeakers, srv, adv, ph,
         current, progressPct, submit, cancelTask, seekAudio,
         taskList, toggleTaskList, manualRefresh, filterOptions, columns, rowProps,
         viewer, t,
@@ -473,9 +519,26 @@
                   <n-tag size="tiny" :bordered="false">{{ fileSize }}</n-tag>
                 </div>
                 <audio ref="audioRef" class="audio-box" controls :src="audioSrc"></audio>
-                <n-checkbox v-if="canIdentify" v-model:checked="identifySpeakers" size="small" style="margin-top:12px;">
+                <n-checkbox v-if="canIdentify" v-model:checked="identifySpeakers" size="small" :disabled="!adv.diarize" style="margin-top:12px;">
                   {{ t('upload.identify') }}
                 </n-checkbox>
+                <n-collapse style="margin-top:12px;">
+                  <n-collapse-item :title="t('adv.title')" name="adv">
+                    <div class="adv-hint">{{ t('adv.hint') }}</div>
+                    <template v-if="srv.punc || srv.align || srv.speaker">
+                      <div class="sec-title">{{ t('adv.output') }}</div>
+                      <div v-if="srv.punc" class="adv-field"><span class="lbl">{{ t('adv.punc') }}</span><n-switch v-model:value="adv.withPunc" size="small"></n-switch></div>
+                      <div v-if="srv.align" class="adv-field"><span class="lbl">{{ t('adv.words') }}</span><n-switch v-model:value="adv.withWords" size="small"></n-switch></div>
+                      <div v-if="srv.speaker" class="adv-field"><span class="lbl">{{ t('adv.diarize') }}</span><n-switch v-model:value="adv.diarize" size="small"></n-switch></div>
+                    </template>
+                    <div class="sec-title">{{ t('adv.tuning') }}</div>
+                    <div class="adv-field"><span class="lbl">{{ t('adv.segment') }}</span><n-input-number v-model:value="adv.maxSegment" size="small" :min="1" :max="30" clearable :placeholder="ph('max_segment')" style="width:128px;"></n-input-number></div>
+                    <template v-if="srv.speakerDb">
+                      <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.idThreshold') }}</span><n-input-number v-model:value="adv.idThreshold" size="small" :min="0" :max="1" :step="0.05" clearable :disabled="!adv.diarize" :placeholder="ph('speaker_id_threshold')" style="width:128px;"></n-input-number></div>
+                      <div class="adv-field"><span class="lbl" :class="{ muted: !adv.diarize }">{{ t('adv.idMargin') }}</span><n-input-number v-model:value="adv.idMargin" size="small" :min="0" :max="1" :step="0.05" clearable :disabled="!adv.diarize" :placeholder="ph('speaker_id_margin')" style="width:128px;"></n-input-number></div>
+                    </template>
+                  </n-collapse-item>
+                </n-collapse>
                 <n-button type="primary" size="large" block strong style="margin-top:14px;"
                           :loading="current.phase === 'submitting'"
                           :disabled="current.phase === 'submitting' || current.phase === 'running'" @click="submit">
