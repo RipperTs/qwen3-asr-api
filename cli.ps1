@@ -776,31 +776,15 @@ function Portable-UpdateDeps {
         catch { }
     }
 
-    $torchIndex = ''
     if ($hasGpu) {
         Write-Ok 'NVIDIA GPU 已检测，将安装 CUDA 版 PyTorch'
-        $torchIndex = 'https://download.pytorch.org/whl/cu124'
     }
     else {
         Write-Warn '未检测到 GPU，将安装 CPU 版 PyTorch'
-        $torchIndex = 'https://download.pytorch.org/whl/cpu'
     }
 
-    # Step 3: Update PyTorch
-    Write-Host
-    Write-Info '更新 PyTorch（可能需要几分钟）...'
-    $torchArgs = @('-m', 'pip', 'install', '--upgrade') + $pipTarget
-    if ($hasGpu) {
-        $torchArgs += @('torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', '--index-url', $torchIndex)
-    }
-    else {
-        $torchArgs += @('torch', 'torchaudio', '--index-url', $torchIndex)
-    }
-    & $pythonBin @torchArgs
-    if ($LASTEXITCODE -eq 0) { Write-Ok 'PyTorch 已更新' }
-    else { Write-Err 'PyTorch 更新失败' }
-
-    # Step 4: Update other dependencies from requirements.txt
+    # Step 3: Update dependencies from requirements.txt first
+    #    (includes CPU torch — will be overwritten in step 4 if GPU)
     $reqFile = Join-Path $ServiceDir 'requirements.txt'
     if (Test-Path $reqFile) {
         Write-Host
@@ -812,6 +796,33 @@ function Portable-UpdateDeps {
     }
     else {
         Write-Warn '未找到 requirements.txt，跳过项目依赖更新'
+    }
+
+    # Step 4: Force reinstall CUDA PyTorch (overwrite CPU version from requirements.txt)
+    #    requirements.txt 中的 torch==2.6.0 会被 pip 解析为 CPU 版。
+    #    --target 模式下 pip uninstall 不支持 --target，--force-reinstall 也不替换包文件，
+    #    必须手动删除旧的 torch 目录和 dist-info，再重新安装。
+    if ($hasGpu) {
+        Write-Host
+        Write-Info '清理旧版 PyTorch...'
+        $torchItems = @('torch', 'torchgen', 'torchaudio', 'torchvision')
+        foreach ($item in $torchItems) {
+            $dir = Join-Path $sitePkgs $item
+            if (Test-Path $dir) { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
+        }
+        # Remove all torch dist-info directories (may have multiple versions)
+        Get-ChildItem $sitePkgs -Directory -Filter 'torch*.dist-info' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^torch(-[a-z]+)?-\d' } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+        Write-Info '安装 CUDA 版 PyTorch...'
+        $cudaArgs = @('-m', 'pip', 'install', '--no-deps') + $pipTarget + @(
+            'torch==2.6.0+cu124', 'torchaudio==2.6.0+cu124', 'torchvision==0.21.0+cu124',
+            '--index-url', 'https://download.pytorch.org/whl/cu124'
+        )
+        & $pythonBin @cudaArgs
+        if ($LASTEXITCODE -eq 0) { Write-Ok 'CUDA 版 PyTorch 已安装' }
+        else { Write-Err 'CUDA 版 PyTorch 安装失败' }
     }
 
     Write-Host
