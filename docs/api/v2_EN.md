@@ -16,6 +16,7 @@ v1 is kept for legacy clients; its offline endpoints are identical to v2 (only t
   - [List Tasks `GET /v2/tasks`](#list-tasks)
   - [Get Task Detail `GET /v2/tasks/{task_id}`](#get-task-detail)
   - [Cancel / Delete Task `DELETE /v2/tasks/{task_id}`](#cancel--delete-task)
+- [Service Entry `GET /`](#service-entry)
 - [Service Status](#service-status)
   - [Health Check `GET /v2/health`](#health-check)
   - [Capabilities `GET /v2/capabilities`](#capabilities)
@@ -57,7 +58,15 @@ curl -X POST http://127.0.0.1:8765/v2/asr \
 |-----------|------|---------|-------------|
 | file | File | Required | Audio file: WAV/MP3/FLAC/M4A/AAC/OGG/WMA/AMR/OPUS |
 | language | string | null | Language code, null for auto-detection |
-| identify_speakers | bool | false | Run voiceprint identification on the diarized speakers (requires both speaker diarization and the [voiceprint database](#speaker-diarization--voiceprint-identification) to be enabled, otherwise silently ignored) |
+| identify_speakers | bool | false | Run voiceprint identification on the diarized speakers (requires both speaker diarization and the [voiceprint database](#speaker-diarization--voiceprint-identification) to be enabled) |
+| with_punc | bool | server default | Whether to restore punctuation (downgrade-only toggle; no punctuation if the model isn't loaded server-side) |
+| with_words | bool | server default | Whether to emit word-level timestamps (requires the alignment model loaded) |
+| diarize | bool | server default | Whether to run speaker diarization (turn off to save compute; requires the speaker engine loaded) |
+| max_segment | int | server default | Max VAD-merge segment length (seconds), range `[1, 30]` |
+| speaker_id_threshold | float | server default | Voiceprint 1:N identification threshold, range `[0, 1]` (requires the voiceprint DB enabled) |
+| speaker_id_margin | float | server default | Voiceprint top1-top2 margin, range `[0, 1]` (requires the voiceprint DB enabled) |
+
+> Out-of-range values → 400; overrides for features that aren't enabled don't error — the transcription `result.warnings` (string array) lists the ignored params.
 
 Response:
 
@@ -195,6 +204,25 @@ Response:
 | Historical task existing only in the persistence store | **Deletes the record** (requires `enable_task_store`) | `deleted` |
 | Unknown | - | `not_found` |
 
+## Service Entry
+
+```
+GET /
+```
+
+When the Web UI is enabled (`--web`), `307`-redirects to `/web-ui`; otherwise returns a service index JSON (pointing to `health` / `capabilities`) — never blank or 404.
+
+```json
+{
+  "service": "Qwen3-ASR Service",
+  "version": "2.0.0",
+  "mode": "standard",
+  "health": "/v2/health",
+  "capabilities": "/v2/capabilities",
+  "web_ui": "未启用，启动加 --web 开启 / disabled, start with --web"
+}
+```
+
 ## Service Status
 
 ### Health Check
@@ -250,7 +278,7 @@ GET /v2/health
 | config_file | Name of the active config file (`null` = no config file loaded) |
 | capabilities | Capability summary, same as `GET /capabilities` |
 
-> In vllm mode (Phase 3 placeholder), non-applicable fields are `null`.
+> In vllm mode (placeholder, not yet implemented), non-applicable fields are `null`.
 
 ### Capabilities
 
@@ -273,6 +301,11 @@ Returns the current serving mode and capability declaration (clients can use it 
     "partial_results": false,
     "word_timestamps": true,
     "speaker_labels": true
+  },
+  "defaults": {
+    "max_segment": 5, "max_end_silence_ms": 800, "max_segment_sec": 12,
+    "speaker_threshold": 0.5, "speaker_id_threshold": 0.45, "speaker_id_margin": 0.1,
+    "energy_floor_dbfs": -50.0, "snr_min_db": 6.0
   }
 }
 ```
@@ -282,10 +315,11 @@ Returns the current serving mode and capability declaration (clients can use it 
 | speaker_labels | Whether speaker diarization is enabled (offline and real-time share the same switch) |
 | speaker_identification | Whether voiceprint real-name identification is available (enrollment / identify / transcription integration) |
 | stream.enabled | Whether the real-time endpoint is mounted (requires `--enable-stream`) |
-| stream.backend | `vad-offline` (Route B) / `vllm-native` (Phase 3) |
+| stream.backend | `vad-offline` / `vllm-native` (not yet implemented) |
 | stream.partial_results | Whether intermediate `partial` results are produced (false for vad-offline) |
 | stream.word_timestamps | Whether `final` carries word-level timestamps (follows the alignment switch) |
 | stream.speaker_labels | Whether real-time `final` carries speaker labels |
+| defaults | Current effective defaults of the overridable params (real-time `start` fields / offline Form fields), reflecting actual config; used by the Web UI for input placeholders |
 
 ## Real-time Transcription
 
@@ -333,6 +367,22 @@ Client                                  Server
 | language | null | Language code, null for auto-detection |
 | wav_name | "stream" | Session name (for display) |
 | identify_speakers | false | Run voiceprint identification on speaker labels (requires `session.created.capabilities.speaker_identification=true`) |
+| noise_filter | server default | Override far-field segment gating for this session (defaults to the server config; requires `capabilities.noise_filter_tunable=true`) |
+| energy_floor_dbfs | server default | Override the absolute energy gate (dBFS) for this session, range `[-90, 0]`; out-of-range returns `invalid_config` |
+| snr_min_db | server default | Override the adaptive SNR gate (dB) for this session, range `[0, 40]`; `0` disables this gate |
+| speaker_threshold | server default | Online clustering cosine threshold, range `[0.2, 0.9]` (requires `capabilities.speaker_labels=true`) |
+| speaker_min_seg_ms | server default | Short-segment gate (ms), range `[0, 10000]` |
+| speaker_max | server default | Max speakers, range `[1, 50]` |
+| speaker_id_threshold | server default | Voiceprint identification threshold, range `[0, 1]` (requires `capabilities.speaker_identification=true`) |
+| speaker_id_margin | server default | Voiceprint top1-top2 margin, range `[0, 1]` |
+| max_end_silence_ms | server default | Endpoint trailing silence (ms), range `[200, 2000]`: smaller = faster output but choppier; larger = won't interrupt but slower |
+| max_segment_sec | server default | Long-sentence fallback split (seconds), range `[1, 60]` |
+| with_punc / with_words / diarize | server default | Downgrade toggles: disable punctuation / word timestamps / diarization (off only; can't enable a model that isn't loaded) |
+
+> **Clamping & soft notices**: these overrides affect only the current session; out-of-range / wrong-type → `invalid_config` (fatal).
+> A well-formed param whose feature isn't enabled (e.g. `diarize:true` with no speaker engine loaded) does NOT error —
+> the server sends a non-fatal `error` after `start` (`code="params_ignored"`, `fatal=false`) whose `message` lists the ignored params.
+> The VAD sensitivity `vad_speech_noise_thres` is a server-global setting (FunASR constraint) and cannot be adjusted per session.
 
 **Audio frames (binary frames)**: PCM16 little-endian, mono, at the declared `audio_fs`. Max 2MB per frame (oversized frames are rejected without disconnecting).
 
@@ -342,7 +392,7 @@ Client                                  Server
 
 | type | Fields | Description |
 |------|--------|-------------|
-| `session.created` | `protocol`("qwen3-asr-stream") / `protocol_version`("1.0") / `mode` / `backend` / `sample_rate` / `capabilities` / `limits` | Sent on connect; `capabilities` contains `partial_results` / `word_timestamps` / `languages_auto` / `speaker_labels` / `speaker_identification`; `limits` contains `max_frame_bytes` / `max_backlog_bytes` — clients pushing faster than real time should pace themselves accordingly (use `final.end` as processing-progress feedback and keep the unprocessed backlog below the limit) |
+| `session.created` | `protocol`("qwen3-asr-stream") / `protocol_version`("1.0") / `mode` / `backend` / `sample_rate` / `capabilities` / `limits` | Sent on connect; `capabilities` contains `partial_results` / `word_timestamps` / `languages_auto` / `speaker_labels` / `speaker_identification`, plus tunability flags `noise_filter_tunable` / `speaker_tunable` / `endpoint_tunable` / `output_toggles` (whether the corresponding overrides can be tuned in this session); `limits` contains `max_frame_bytes` / `max_backlog_bytes` — clients pushing faster than real time should pace themselves accordingly (use `final.end` as processing-progress feedback and keep the unprocessed backlog below the limit) |
 | `partial` | `seg_id` / `text` | Intermediate result (only for backends with `partial_results=true`; vad-offline does not produce them) |
 | `final` | `seg_id` / `text` / `start` / `end` / `words` / `speaker` / `speaker_name` | Finalized sentence-level result; `start`/`end` in milliseconds; `words` only when `word_timestamps=true`; `speaker` (anonymous label A/B/C…) only when `speaker_labels=true` and this segment is decidable; `speaker_name` only when `identify_speakers=true` and a voiceprint matches |
 | `error` | `code` / `message` / `seg_id` / `fatal` | The session terminates when `fatal=true` |

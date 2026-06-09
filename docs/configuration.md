@@ -29,7 +29,7 @@
 
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--serve-mode` | `standard` / `vllm` | `standard` | 运行模式；`vllm` 为 Phase 3 占位，暂未实现（仅提供 /health /capabilities） |
+| `--serve-mode` | `standard` / `vllm` | `standard` | 运行模式；`vllm` 为占位，暂未实现（仅提供 /health /capabilities） |
 | `--device` | `auto` / `cuda` / `cpu` | `auto` | 运行设备，`auto` 自动检测（≥6GB 显存选 1.7B，4–6GB 选 0.6B，<4GB 关对齐，无 GPU 回退 CPU/OpenVINO） |
 | `--model-size` | `0.6b` / `1.7b` | 按显存自动选择 | ASR 模型大小 |
 | `--enable-align` / `--no-align` | - | 开启 | 对齐模型（单词级时间戳）；CPU 模式强制关闭 |
@@ -55,6 +55,17 @@
 | `--max-stream-sessions` | 数字 | `16` | 实时最大并发会话数（超额连接以 1013 关闭） |
 | `--stream-asr-concurrency` | 数字 | `1` | 实时 ASR 解码并发上限（模型层有推理锁，>1 无收益） |
 
+### 智能远场过滤
+
+减少远场声音与环境音造成的误触发。`--vad-speech-noise-thres` 调高 VAD 灵敏度（离线+实时统一）；`--stream-noise-filter` 开启实时段级能量/SNR 门控（仅实时，默认关）。
+
+| 参数 | 取值 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--vad-speech-noise-thres` | 浮点 | `0.6` | FSMN-VAD 语音/噪声判决阈值（离线+实时统一）；调高更激进过滤远场/弱帧，建议 `0.6`–`0.8` |
+| `--stream-noise-filter` / `--no-stream-noise-filter` | - | 关闭 | 实时段级能量/SNR 门控总开关（opt-in） |
+| `--stream-energy-floor-dbfs` | 浮点 | `-50.0` | 绝对能量门（dBFS，满量程参考）：段响度低于此丢弃 |
+| `--stream-snr-min-db` | 浮点 | `6.0` | 自适应信噪比门（dB）：段相对会话噪声底不足此值丢弃；`<=0` 关闭该门 |
+
 ### 任务持久化
 
 | 参数 | 取值 | 默认值 | 说明 |
@@ -68,7 +79,7 @@
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--enable-speaker` / `--no-speaker` | - | 关闭 | 说话人分离：离线 `segments[].speaker` / 实时 `final.speaker`（匿名 A/B/C…）；CAM++ 模型 28MB 首次自动下载，CPU 推理不占显存 |
-| `--speaker-threshold` | 0–1 | `0.5` | 实时在线归簇余弦阈值（实测可用区间 0.35–0.65；调高更易分人、调低更易并人） |
+| `--speaker-threshold` | 0–1 | `0.5` | 实时在线归簇余弦阈值（推荐区间 0.35–0.65；调高更易分人、调低更易并人） |
 | `--speaker-max` | 数字 | `8` | 说话人数上限（实时硬上限；离线谱聚类簇数搜索上界） |
 | `--speaker-min-seg-ms` | 毫秒 | `1500` | 实时短段门槛：短于此的段不建新簇/不更新质心（声纹特征在 ≥1.5s 才稳定） |
 | `--speaker-max-windows` | 数字 | `4000` | 离线滑窗数上限，超出均匀抽稀（超长音频聚类内存防护） |
@@ -92,6 +103,7 @@
 |------|------|
 | `--config <PATH>` | 显式指定 YAML 配置文件（文件不存在则启动报错） |
 | `--no-config` | 跳过配置文件加载与引导生成（纯默认值 + 环境变量 + 命令行，排障用） |
+| `--update-config` | 把 `config.example.yaml` 的新增项同步进 `config.yaml`（追加缺失项、保留既有值；默认关） |
 
 ## 配置文件（config.yaml）
 
@@ -117,6 +129,7 @@ bash start.sh --no-config
 - 扫描目录为服务根目录（`asr-service/`），`config.yaml` 优先于 `config.yml`（并存时告警并取 `.yaml`）。
 - **删除 `config.yaml` 后重启 = 重置配置**（重新由 example 生成默认配置）。
 - 引导生成的 `config.yaml` 权限为 `600`（该文件可能写入 `api_key`）。
+- **同步新增项（`--update-config`，默认关）**：加 `--update-config` 启动时，会把 `config.example.yaml` 里**新增的激活项**追加进自动发现到的 `config.yaml`（沿用 example 默认值，加「自动同步」注释头），既有值与注释保持不动。服务升级带来新配置项时用它一键补齐；已被你注释掉的键不会被重新加入。仅作用于自动发现的 `config.yaml`，`--config` 指定的外部文件不改动。
 
 ### 格式与校验
 

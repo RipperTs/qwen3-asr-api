@@ -82,7 +82,7 @@ Audio File → ffmpeg convert (16kHz WAV) → VAD segmentation → Segment merge
                                                                    → BPE decode
 ```
 
-**Real-time transcription (Route B, `WS /v2/asr/stream`):**
+**Real-time transcription (`WS /v2/asr/stream`):**
 
 ```
 Client audio frames (PCM16) → online VAD chunking (200ms) → speech segmentation → in-memory offline decoding (shared ASR engine) → per-sentence final results

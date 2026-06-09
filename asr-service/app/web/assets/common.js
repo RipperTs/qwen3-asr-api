@@ -58,6 +58,11 @@ window.AsrCommon = (function () {
       'theme.auto': '主题：跟随系统', 'theme.light': '主题：浅色', 'theme.dark': '主题：深色',
       'lang.title': '切换语言 / Switch language',
       'svc.checking': '服务状态检测中…', 'svc.ready': '服务就绪', 'svc.notReady': '服务未就绪：', 'svc.unreachable': '服务不可达',
+      'model.title': '模型信息', 'model.mode': '运行模式', 'model.device': '设备', 'model.modelSize': '模型规格',
+      'model.asrBackend': 'ASR 后端', 'model.vadBackend': 'VAD 后端', 'model.puncBackend': '标点后端',
+      'model.align': '词级对齐', 'model.punc': '标点恢复', 'model.speaker': '说话人分离', 'model.speakerDb': '声纹库',
+      'model.configFile': '配置文件', 'model.on': '开', 'model.off': '关', 'model.none': '未加载',
+      'model.unavailable': '服务信息暂不可用',
     },
     en: {
       'nav.offline': 'Transcribe', 'nav.stream': 'Live', 'nav.speakers': 'Speakers', 'nav.docs': 'Docs',
@@ -65,6 +70,11 @@ window.AsrCommon = (function () {
       'theme.auto': 'Theme: system', 'theme.light': 'Theme: light', 'theme.dark': 'Theme: dark',
       'lang.title': '切换语言 / Switch language',
       'svc.checking': 'Checking service…', 'svc.ready': 'Service ready', 'svc.notReady': 'Service not ready: ', 'svc.unreachable': 'Service unreachable',
+      'model.title': 'Model info', 'model.mode': 'Mode', 'model.device': 'Device', 'model.modelSize': 'Model size',
+      'model.asrBackend': 'ASR backend', 'model.vadBackend': 'VAD backend', 'model.puncBackend': 'Punc backend',
+      'model.align': 'Word align', 'model.punc': 'Punctuation', 'model.speaker': 'Diarization', 'model.speakerDb': 'Voiceprint DB',
+      'model.configFile': 'Config file', 'model.on': 'on', 'model.off': 'off', 'model.none': 'none',
+      'model.unavailable': 'Service info unavailable',
     },
   };
   const ct = makeT(COMMON_M);
@@ -94,6 +104,8 @@ window.AsrCommon = (function () {
     moon: 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z',
     auto: 'M2 5h20v12H2z|M8 21h8|M12 17v4',
     chev: 'M6 9l6 6 6-6',
+    chip: 'M5 5h14v14H5z|M9 9h6v6H9z|M9 2v3|M15 2v3|M9 19v3|M15 19v3|M2 9h3|M2 15h3|M19 9h3|M19 15h3',
+    info: 'M12 22a10 10 0 1 1 0-20 10 10 0 0 1 0 20z|M12 8v5|M12 16h.01',
   };
   const AIcon = {
     name: 'AIcon',
@@ -139,8 +151,8 @@ window.AsrCommon = (function () {
         // Naive UI 组件内置文案（空表/分页/确认按钮等）跟随语言
         const naiveLocale = computed(() => (locale.value === 'zh' ? naive.zhCN : naive.enUS));
         const naiveDateLocale = computed(() => (locale.value === 'zh' ? naive.dateZhCN : naive.dateEnUS));
-        // 文档导航入口随语言指向对应版本（英文镜像 slug = readme_en）
-        const docsHref = computed(() => (locale.value === 'en' ? '/web-ui/docs/readme_en' : '/web-ui/docs'));
+        // 文档导航入口随当前语言直达对应 README（英文 readme / 中文 readme_zh）
+        const docsHref = computed(() => (locale.value === 'en' ? '/web-ui/docs/readme' : '/web-ui/docs/readme_zh'));
 
         // 服务状态点：加载时查一次 /v2/health（无鉴权端点），不做持续轮询；
         // 状态存 key+detail，title 经 computed 翻译（语言切换即时生效）
@@ -150,10 +162,35 @@ window.AsrCommon = (function () {
           if (svc.key === 'notReady') return ct('svc.notReady') + svc.detail;
           return ct('svc.' + svc.key);
         });
+        // 状态短文案（不含设备/模型明细——明细已在下方模型行）：合入模型卡顶部状态行
+        const svcState = computed(() => (svc.key === 'ready' ? ct('svc.ready') : svcTitle.value));
+
+        // 模型信息卡片：/v2/health 全量字段（应用栏 chip 图标悬停展示，随语言重渲染）
+        const health = reactive({ loaded: false });
+        const modelRows = computed(() => {
+          if (!health.loaded) return [];
+          const rows = [];
+          const add = (label, value, cls) => rows.push({ label, value, cls: cls || '' });
+          const onoff = (b) => b ? ct('model.on') : ct('model.off');
+          add(ct('model.mode'), health.mode);
+          add(ct('model.device'), health.device);
+          if (health.model_size) add(ct('model.modelSize'), health.model_size);
+          if (health.asr_backend) add(ct('model.asrBackend'), health.asr_backend);
+          if (health.vad_backend) add(ct('model.vadBackend'), health.vad_backend);
+          if (health.punc_backend) add(ct('model.puncBackend'), health.punc_backend);
+          add(ct('model.align'), onoff(health.align_enabled), health.align_enabled ? 'on' : 'off');
+          add(ct('model.punc'), onoff(health.punc_enabled), health.punc_enabled ? 'on' : 'off');
+          add(ct('model.speaker'), onoff(health.speaker_enabled), health.speaker_enabled ? 'on' : 'off');
+          add(ct('model.speakerDb'), onoff(health.speaker_db_enabled), health.speaker_db_enabled ? 'on' : 'off');
+          add(ct('model.configFile'), health.config_file || ct('model.none'), health.config_file ? '' : 'off');
+          return rows;
+        });
+
         onMounted(async () => {
           try {
             const r = await fetch('/v2/health');
             const d = await r.json();
+            if (r.ok) { Object.assign(health, d); health.loaded = true; }
             if (r.ok && d.status === 'ready') {
               svc.cls = 'ok';
               svc.key = 'ready';
@@ -169,8 +206,8 @@ window.AsrCommon = (function () {
           }
         });
 
-        return { theme, themeOverrides, themeMode, themeIcon, themeLabel, cycleTheme, hasKey, svc, svcTitle, apiKey,
-                 t: ct, locale, toggleLang, docsHref, naiveLocale, naiveDateLocale };
+        return { theme, themeOverrides, themeMode, themeIcon, themeLabel, cycleTheme, hasKey, svc, svcTitle, svcState, apiKey,
+                 modelRows, t: ct, locale, toggleLang, docsHref, naiveLocale, naiveDateLocale };
       },
     };
   }

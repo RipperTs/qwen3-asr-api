@@ -5,7 +5,11 @@
   --accent: #14b8a6;
   --accent-deep: #0d9488;
   --rec: #ef4444;
+  /* 键值行配色（模型信息卡 / 会话协议卡共用，随主题切换） */
+  --kv-key: #64748b;
+  --kv-val: #334155;
 }
+body.dark { --kv-key: #94a3b8; --kv-val: #e2e8f0; }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 /* 背景：网点纹理 + 顶部主色光晕（颜色本体由 Naive 主题 bodyColor 控制） */
@@ -43,21 +47,35 @@ body.dark .brand { color: #e2e8f0; }
 .appnav a.active { color: var(--accent-deep); border-bottom-color: var(--accent); }
 body.dark .appnav a { color: #94a3b8; }
 body.dark .appnav a:hover, body.dark .appnav a.active { color: #2dd4bf; }
-.appbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.appbar-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 .iconbtn {
-  position: relative; width: 32px; height: 32px; border: none; background: transparent;
-  border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
-  color: #64748b; transition: background .15s ease, color .15s ease;
+  position: relative; width: 32px; height: 32px; background: transparent;
+  border: 1px solid rgba(15, 23, 42, .1); border-radius: 8px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #64748b; transition: background .15s ease, color .15s ease, border-color .15s ease;
 }
-.iconbtn:hover { background: rgba(20, 184, 166, .1); color: var(--accent-deep); }
-body.dark .iconbtn { color: #94a3b8; }
-body.dark .iconbtn:hover { background: rgba(45, 212, 191, .12); color: #2dd4bf; }
-.iconbtn.has-key::after { content: ''; position: absolute; right: 5px; bottom: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
-.iconbtn.lang-btn { width: auto; min-width: 32px; padding: 0 8px; font-size: .74em; font-weight: 700; }
-.svc-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #94a3b8; margin-right: 2px; cursor: default; }
-.svc-dot.ok { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, .65); }
-.svc-dot.warn { background: #f59e0b; }
-.svc-dot.off { background: #64748b; opacity: .55; }
+.iconbtn:hover { background: rgba(20, 184, 166, .1); border-color: rgba(20, 184, 166, .4); color: var(--accent-deep); }
+body.dark .iconbtn { color: #94a3b8; border-color: rgba(255, 255, 255, .13); }
+body.dark .iconbtn:hover { background: rgba(45, 212, 191, .12); border-color: rgba(45, 212, 191, .42); color: #2dd4bf; }
+/* 统一光学视重：稍放大 + 收细描边，让密集图标(chip)与稀疏图标(key)观感拉平 */
+.appbar-right .iconbtn svg { width: 17px; height: 17px; stroke-width: 1.7; }
+/* API Key 已配置点：小巧 + 同背景描边环，从应用栏干净浮起 */
+.iconbtn.has-key::after { content: ''; position: absolute; right: 4px; bottom: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1.5px rgba(255, 255, 255, .92); }
+body.dark .iconbtn.has-key::after { box-shadow: 0 0 0 1.5px rgba(16, 17, 21, .95); }
+.iconbtn.lang-btn { width: auto; min-width: 32px; padding: 0 9px; font-size: .8em; font-weight: 600; letter-spacing: .03em; }
+/* 服务状态点：独立「状态区」，柔光环替代强发光，用细分隔线与右侧操作图标分组 */
+/* 服务就绪灯：并入模型信息(chip)按钮的角标，状态色随 svc.cls */
+.svc-badge { width: 6px; height: 6px; border-radius: 50%; background: #94a3b8; flex-shrink: 0; }
+.svc-host .svc-badge { position: absolute; right: 4px; bottom: 4px; box-shadow: 0 0 0 1.5px rgba(255, 255, 255, .92); }
+body.dark .svc-host .svc-badge { box-shadow: 0 0 0 1.5px rgba(16, 17, 21, .95); }
+.svc-host.ok .svc-badge, .svc-line.ok .svc-badge { background: #10b981; }
+.svc-host.warn .svc-badge, .svc-line.warn .svc-badge { background: #f59e0b; }
+.svc-host.off .svc-badge, .svc-line.off .svc-badge { background: #94a3b8; }
+/* 模型信息卡顶部服务状态行 */
+.svc-line { display: flex; align-items: center; gap: 7px; font-size: .82em; font-weight: 600; color: var(--kv-val); padding-bottom: 9px; margin-bottom: 7px; border-bottom: 1px solid rgba(148, 163, 184, .16); }
+.svc-line .svc-badge { width: 7px; height: 7px; }
+/* 应用栏分组分隔线（模型信息 ↔ 操作图标） */
+.appbar-sep { width: 1px; height: 18px; background: rgba(148, 163, 184, .28); margin: 0 6px; flex-shrink: 0; }
 
 /* —— 内容区 / 工作区栅格 —— */
 .container { position: relative; z-index: 1; max-width: 1280px; margin: 0 auto; padding: 24px clamp(16px, 4vw, 32px) 56px; }
@@ -102,6 +120,25 @@ body.dark .file-meta { color: #94a3b8; }
 .audio-box { width: 100%; margin-top: 10px; height: 40px; }
 .sec-title { font-size: .8em; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #64748b; margin: 4px 0 10px; }
 body.dark .sec-title { color: #94a3b8; }
+
+/* 高级设置：标签 + 控件成行对齐（离线/实时 per-request 覆盖项） */
+.adv-field { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 9px 0; }
+.adv-field .lbl { font-size: .82em; color: #475569; flex: 1; min-width: 0; line-height: 1.35; transition: opacity .15s; }
+body.dark .adv-field .lbl { color: #cbd5e1; }
+.adv-field .lbl.muted { opacity: .4; }
+.adv-hint { font-size: .76em; color: #94a3b8; line-height: 1.55; margin: 2px 0 12px; }
+.adv-field + .sec-title { margin-top: 16px; }
+
+/* 应用栏「模型信息」卡片（chip 图标悬停弹出） */
+.model-card { min-width: 226px; }
+.model-card-title { font-size: .76em; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+.model-row { display: flex; justify-content: space-between; gap: 18px; padding: 5px 0; font-size: .84em; font-variant-numeric: tabular-nums; }
+.model-row + .model-row { border-top: 1px solid rgba(148, 163, 184, .16); }
+.model-row .k { color: var(--kv-key); white-space: nowrap; }
+.model-row .v { font-weight: 600; color: var(--kv-val); text-align: right; word-break: break-all; }
+.model-row .v.on { color: var(--accent); }
+.model-row .v.off { color: #94a3b8; font-weight: 500; }
+
 .seg-row { display: flex; align-items: flex-start; gap: 14px; padding: 6px 8px 6px 0; border-radius: 8px; cursor: pointer; }
 .seg-row.static { cursor: default; }
 .seg-row:hover { background: rgba(20, 184, 166, .07); }
@@ -141,6 +178,14 @@ body.dark .status-pill.streaming { color: #f87171; }
 .diag-row { display: flex; gap: 30px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
 .diag-unit { font-size: .6em; opacity: .65; }
 .vu-canvas { display: block; width: 100%; height: 12px; border-radius: 6px; background: rgba(127, 127, 127, .13); }
+/* 文件模拟：ffmpeg 选项（勾选框 + 说明 popover 触发图标）与转码器加载提示 */
+.ff-opt { display: flex; align-items: center; gap: 6px; }
+.info-dot { display: inline-flex; align-items: center; color: #94a3b8; cursor: help; transition: color .15s ease; }
+.info-dot:hover { color: var(--accent-deep); }
+body.dark .info-dot:hover { color: #2dd4bf; }
+.ff-tip { max-width: 264px; font-size: .82em; line-height: 1.65; }
+.ff-loading { display: flex; align-items: center; gap: 8px; font-size: .8em; color: var(--accent-deep); }
+body.dark .ff-loading { color: #2dd4bf; }
 .transcript-line { display: flex; gap: 12px; padding: 3px 0; }
 .transcript-line .t {
   flex: 0 0 80px; text-align: right; padding: 5px 10px 0 0;
@@ -155,6 +200,10 @@ body.dark .transcript-line .t { color: #94a3b8; }
 }
 .cursor-blk { display: inline-block; width: 8px; height: 1.05em; background: var(--accent); vertical-align: text-bottom; margin-left: 3px; animation: cursor-blink 1s steps(2) infinite; }
 @keyframes cursor-blink { 50% { opacity: 0; } }
+/* 追加输出：分隔不同录制/推流批次的虚线 + 居中标签 */
+.transcript-divider { display: flex; align-items: center; gap: 10px; margin: 14px 0; color: #94a3b8; font-size: .72em; font-weight: 600; letter-spacing: .05em; }
+.transcript-divider::before, .transcript-divider::after { content: ''; flex: 1; border-top: 1px dashed rgba(148, 163, 184, .4); }
+body.dark .transcript-divider::before, body.dark .transcript-divider::after { border-top-color: rgba(148, 163, 184, .26); }
 .proto-log {
   max-height: 300px; overflow: auto; padding: 10px 12px; border-radius: 8px;
   font-family: var(--mono); font-size: .76em; line-height: 1.55;
@@ -166,6 +215,56 @@ body.dark .transcript-line .t { color: #94a3b8; }
 body.dark .proto-log .send { color: #60a5fa; }
 body.dark .proto-log .recv { color: #4ade80; }
 body.dark .proto-log .evt { color: #fbbf24; }
+
+/* —— 实时页 · 会话协议卡片（输入源下方，session.created 后出现）—— */
+.sess-card { margin-top: 16px; position: relative; overflow: hidden; }
+/* 顶部主色渐隐细线，呼应「会话握手已建立」语义 */
+.sess-card::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, var(--accent), rgba(20, 184, 166, 0) 78%);
+}
+.sess-proto {
+  display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+  padding-bottom: 12px; margin-bottom: 12px;
+  border-bottom: 1px dashed rgba(148, 163, 184, .28);
+}
+.sess-proto .id {
+  font-family: var(--mono); font-size: 1em; font-weight: 700;
+  letter-spacing: -.2px; color: #0f172a; word-break: break-all;
+}
+body.dark .sess-proto .id { color: #e2e8f0; }
+.sess-proto .ver {
+  font-family: var(--mono); font-size: .72em; font-weight: 700;
+  padding: 1px 8px; border-radius: 999px;
+  background: rgba(20, 184, 166, .14); color: var(--accent-deep);
+}
+body.dark .sess-proto .ver { color: #2dd4bf; }
+.sess-meta { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: baseline; }
+.sess-meta .k { font-size: .82em; color: var(--kv-key); }
+.sess-meta .v {
+  font-family: var(--mono); font-size: .82em; font-weight: 600;
+  color: var(--kv-val); text-align: right; word-break: break-all; font-variant-numeric: tabular-nums;
+}
+.sess-caps-label {
+  font-size: .8em; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: #64748b; margin: 16px 0 9px;
+}
+body.dark .sess-caps-label { color: #94a3b8; }
+.sess-caps { display: flex; flex-wrap: wrap; gap: 6px; }
+.cap-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px 3px 8px; border-radius: 999px;
+  font-size: .75em; font-weight: 600; line-height: 1.5;
+}
+.cap-chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.cap-chip.on { background: rgba(20, 184, 166, .12); color: #0d9488; }
+.cap-chip.on::before { background: var(--accent); box-shadow: 0 0 5px rgba(20, 184, 166, .55); }
+.cap-chip.off { background: rgba(148, 163, 184, .1); color: #94a3b8; }
+.cap-chip.off::before { border: 1.5px solid #cbd5e1; }
+body.dark .cap-chip.on { color: #2dd4bf; }
+body.dark .cap-chip.off { color: #94a3b8; background: rgba(148, 163, 184, .08); }
+body.dark .cap-chip.off::before { border-color: #475569; }
+.cap-chip.has-tip { cursor: help; }
 
 /* —— 文档中心（服务端渲染 Markdown，外壳走 Studio Console）—— */
 .docs-layout { display: flex; gap: 20px; align-items: flex-start; }

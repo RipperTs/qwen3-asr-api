@@ -108,6 +108,7 @@ class CapabilitiesResponse(BaseModel):
     speaker_labels: bool = False       # 说话人分离总开关（离线+实时同一开关）
     speaker_identification: bool = False   # 声纹库真名识别（enroll/identify 可用）
     stream: StreamCapabilities
+    defaults: dict = {}                # 可覆盖参数的当前生效默认值（Web UI 占位提示，反映实际配置）
 
 
 class HealthResponse(BaseModel):

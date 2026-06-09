@@ -25,6 +25,11 @@ LEGACY_DEFAULTS = {
     "enable_stream": False,
     "max_stream_sessions": None,
     "stream_asr_concurrency": None,
+    # ── 远场过滤新增，非重构前遗留 ──
+    "vad_speech_noise_thres": 0.6,
+    "stream_noise_filter": False,
+    "stream_energy_floor_dbfs": -50.0,
+    "stream_snr_min_db": 6.0,
     # ── P 系列（任务持久化）新增，非重构前遗留 ──
     "enable_task_store": False,
     "task_db_path": "data/tasks.db",
@@ -52,9 +57,9 @@ def test_schema_defaults_match_legacy():
 
 
 def test_no_args_only_meta_keys():
-    """未传任何参数：Namespace 仅含 --config/--no-config 元参数，schema 参数全部缺席。"""
+    """未传任何参数：Namespace 仅含 --config/--no-config/--update-config 元参数，schema 参数全部缺席。"""
     ns = build_parser().parse_args([])
-    assert vars(ns) == {"config": None, "no_config": False}
+    assert vars(ns) == {"config": None, "no_config": False, "update_config": False}
 
 
 @pytest.mark.parametrize("spec", ARG_SPECS, ids=lambda s: s.key)

@@ -29,7 +29,7 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
-| `--serve-mode` | `standard` / `vllm` | `standard` | Serving mode; `vllm` is a Phase 3 placeholder, not implemented yet (only /health and /capabilities) |
+| `--serve-mode` | `standard` / `vllm` | `standard` | Serving mode; `vllm` is a placeholder, not implemented yet (only /health and /capabilities) |
 | `--device` | `auto` / `cuda` / `cpu` | `auto` | Device; `auto` detects (≥6GB VRAM → 1.7B, 4–6GB → 0.6B, <4GB disables alignment, no GPU falls back to CPU/OpenVINO) |
 | `--model-size` | `0.6b` / `1.7b` | Auto by VRAM | ASR model size |
 | `--enable-align` / `--no-align` | - | Enabled | Alignment model (word-level timestamps); force-disabled in CPU mode |
@@ -55,6 +55,17 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 | `--max-stream-sessions` | Number | `16` | Max concurrent real-time sessions (excess connections closed with 1013) |
 | `--stream-asr-concurrency` | Number | `1` | Real-time ASR decoding concurrency cap (the model layer holds an inference lock; >1 brings no gain) |
 
+### Far-field Noise Filtering
+
+Reduces false triggers from far-field sounds and ambient noise. `--vad-speech-noise-thres` tunes VAD sensitivity (offline + real-time unified); `--stream-noise-filter` enables real-time segment-level energy/SNR gating (real-time only, off by default).
+
+| Parameter | Values | Default | Description |
+|-----------|--------|---------|-------------|
+| `--vad-speech-noise-thres` | Float | `0.6` | FSMN-VAD speech/noise decision threshold (offline + real-time unified); higher = more aggressive filtering of far-field/weak frames, recommended `0.6`–`0.8` |
+| `--stream-noise-filter` / `--no-stream-noise-filter` | - | Disabled | Master switch for real-time segment-level energy/SNR gating (opt-in) |
+| `--stream-energy-floor-dbfs` | Float | `-50.0` | Absolute energy gate (dBFS, full-scale referenced): segments quieter than this are dropped |
+| `--stream-snr-min-db` | Float | `6.0` | Adaptive SNR gate (dB): segments not exceeding the session noise floor by this margin are dropped; `<=0` disables this gate |
+
 ### Task Persistence
 
 | Parameter | Values | Default | Description |
@@ -68,7 +79,7 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
 | `--enable-speaker` / `--no-speaker` | - | Disabled | Speaker diarization: offline `segments[].speaker` / real-time `final.speaker` (anonymous A/B/C…); the CAM++ model (28MB) is auto-downloaded on first use and runs on CPU without consuming VRAM |
-| `--speaker-threshold` | 0–1 | `0.5` | Online clustering cosine threshold for real-time (usable range observed at 0.35–0.65; higher splits speakers more aggressively, lower merges them more aggressively) |
+| `--speaker-threshold` | 0–1 | `0.5` | Online clustering cosine threshold for real-time (recommended range 0.35–0.65; higher splits speakers more aggressively, lower merges them more aggressively) |
 | `--speaker-max` | Number | `8` | Upper bound on speaker count (hard cap in real-time; upper bound of the cluster-count search in offline spectral clustering) |
 | `--speaker-min-seg-ms` | Milliseconds | `1500` | Real-time short-segment gate: segments shorter than this neither create a new cluster nor update a centroid (voiceprint features only stabilize at ≥1.5s) |
 | `--speaker-max-windows` | Number | `4000` | Upper bound on offline sliding windows; the excess is uniformly subsampled (memory guard for clustering very long audio) |
@@ -92,6 +103,7 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 |-----------|-------------|
 | `--config <PATH>` | Explicitly specify a YAML config file (startup fails if missing) |
 | `--no-config` | Skip config-file loading and bootstrap generation (pure defaults + env vars + CLI; for troubleshooting) |
+| `--update-config` | Sync newly added keys from `config.example.yaml` into `config.yaml` (append missing keys, keep existing values; off by default) |
 
 ## Config File (config.yaml)
 
@@ -117,6 +129,7 @@ bash start.sh --no-config
 - The scan directory is the service root (`asr-service/`); `config.yaml` takes precedence over `config.yml` (a warning is logged when both exist).
 - **Deleting `config.yaml` and restarting = resetting the configuration** (regenerated from the example).
 - The bootstrap-generated `config.yaml` has permission `600` (it may contain `api_key`).
+- **Sync new keys (`--update-config`, off by default)**: when started with `--update-config`, newly **active** keys from `config.example.yaml` are appended to the auto-discovered `config.yaml` (using the example's default value, under an "auto-sync" comment header); existing values and comments are left untouched. Use it to fill in new config options after an upgrade; keys you have commented out are not re-added. Only the auto-discovered `config.yaml` is touched — an external file passed via `--config` is never modified.
 
 ### Format and Validation
 

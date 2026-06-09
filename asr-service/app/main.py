@@ -5,6 +5,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 
 from app.utils.logger import setup_logger
 from app.utils.arg_schema import build_parser, ARG_SPECS
@@ -102,6 +103,13 @@ def _apply_cli_config(args):
         cfg.MAX_STREAM_SESSIONS = args.max_stream_sessions
     if getattr(args, "stream_asr_concurrency", None) is not None:
         cfg.STREAM_ASR_CONCURRENCY = args.stream_asr_concurrency
+    if getattr(args, "vad_speech_noise_thres", None) is not None:
+        cfg.VAD_SPEECH_NOISE_THRES = args.vad_speech_noise_thres
+    cfg.STREAM_NOISE_FILTER = getattr(args, "stream_noise_filter", False)
+    if getattr(args, "stream_energy_floor_dbfs", None) is not None:
+        cfg.STREAM_ENERGY_FLOOR_DBFS = args.stream_energy_floor_dbfs
+    if getattr(args, "stream_snr_min_db", None) is not None:
+        cfg.STREAM_SNR_MIN_DB = args.stream_snr_min_db
     cfg.ENABLE_SPEAKER = getattr(args, "enable_speaker", False)
     if getattr(args, "speaker_threshold", None) is not None:
         cfg.SPEAKER_THRESHOLD = args.speaker_threshold
@@ -151,8 +159,26 @@ def create_app(args=None) -> FastAPI:
     else:
         _assemble_standard(app, args)
 
+    _mount_root(app)
     logger.info(f"Qwen3-ASR Service 就绪（serve-mode={serve_mode}），监听 {cfg.HOST}:{cfg.PORT}")
     return app
+
+
+def _mount_root(app: FastAPI) -> None:
+    """根路径：已启用 Web UI 则跳转，否则回服务索引（避免空白/404）。"""
+
+    @app.get("/", include_in_schema=False)
+    async def root():
+        if cfg.ENABLE_WEB:
+            return RedirectResponse(url="/web-ui")
+        return {
+            "service": "Qwen3-ASR Service",
+            "version": app.version,
+            "mode": cfg.SERVE_MODE,
+            "health": "/v2/health",
+            "capabilities": "/v2/capabilities",
+            "web_ui": "未启用，启动加 --web 开启 / disabled, start with --web",
+        }
 
 
 def _assemble_standard(app: FastAPI, args) -> None:
@@ -319,6 +345,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
             progress_callback=on_progress,
             cancelled=lambda: task_manager.is_stopping or task_manager.is_cancelled(task["task_id"]),
             identify_speakers=task.get("identify_speakers", False),
+            options=task.get("options"),
         )
 
     task_manager.set_processor(process_task)
@@ -338,6 +365,19 @@ def _assemble_standard(app: FastAPI, args) -> None:
             "partial_results": False,
             "word_timestamps": enable_align if stream_enabled else False,
             "speaker_labels": speaker_enabled if stream_enabled else False,
+        },
+        # 可覆盖参数的当前生效默认值（反映实际配置，供 Web UI 占位提示）
+        "defaults": {
+            "max_segment": cfg.MAX_SEGMENT_DURATION,
+            "max_end_silence_ms": cfg.VAD_MAX_SILENCE,
+            "max_segment_sec": cfg.STREAM_MAX_SEGMENT_SEC,
+            "speaker_threshold": cfg.SPEAKER_THRESHOLD,
+            "speaker_min_seg_ms": cfg.SPEAKER_MIN_SEG_MS,
+            "speaker_max": cfg.SPEAKER_MAX,
+            "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
+            "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
+            "energy_floor_dbfs": cfg.STREAM_ENERGY_FLOOR_DBFS,
+            "snr_min_db": cfg.STREAM_SNR_MIN_DB,
         },
     }
     service_info = {
@@ -387,6 +427,9 @@ def _assemble_standard(app: FastAPI, args) -> None:
             asr_concurrency=cfg.STREAM_ASR_CONCURRENCY,
             max_segment_sec=cfg.STREAM_MAX_SEGMENT_SEC,
             vad_chunk_ms=cfg.STREAM_VAD_CHUNK_MS,
+            noise_filter=cfg.STREAM_NOISE_FILTER,
+            energy_floor_dbfs=cfg.STREAM_ENERGY_FLOOR_DBFS,
+            snr_min_db=cfg.STREAM_SNR_MIN_DB,
         )
         init_ws_stream(stream_backend)
         app.include_router(ws_router_stream)
@@ -397,6 +440,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
         from app.web.views import web_router, ASSETS_DIR
         app.include_router(web_router)
         app.mount("/web-ui/assets", StaticFiles(directory=ASSETS_DIR), name="web-assets")
+        cfg.ENABLE_WEB = True       # 根路径据此跳转 /web-ui（仅实际挂载时置位）
         logger.info(f"Web UI 已启用，访问 http://{cfg.HOST}:{cfg.PORT}/web-ui")
 
     @app.on_event("shutdown")
