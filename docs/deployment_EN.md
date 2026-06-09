@@ -138,12 +138,13 @@ docker run -d --gpus all \
   -p 8765:8765 \
   -v ./asr-service/models:/app/models \
   -v ./asr-service/logs:/app/logs \
+  -v ./asr-service/data:/app/data \
   --name qwen3-asr-service \
   lancelrq/qwen3-asr-service:latest \
   --model-size 0.6b --device auto --web
 ```
 
-CPU / ARM64 images (`latest-cpu` / `latest-arm64`) and volume details: see the [Docker Hub page](https://hub.docker.com/r/lancelrq/qwen3-asr-service). When task persistence is enabled, also mount `/app/data`.
+`/app/data` holds the task-persistence DB `tasks.db` and voiceprint DB `speakers.db`; mount it to keep them across container re-creation (compose mounts it by default). CPU / ARM64 images (`latest-cpu` / `latest-arm64`) and more volume details: see the [Docker Hub page](https://hub.docker.com/r/lancelrq/qwen3-asr-service).
 
 ### Using docker-compose
 

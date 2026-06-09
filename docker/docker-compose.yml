@@ -16,6 +16,8 @@ services:
       - ../asr-service/config.yaml:/app/config.yaml
       - ../asr-service/models:/app/models
       - ../asr-service/logs:/app/logs
+      # SQLite 数据库（任务持久化 data/tasks.db、声纹库 data/speakers.db）：挂出以跨重建保留
+      - ../asr-service/data:/app/data
     deploy:
       resources:
         reservations:

@@ -138,12 +138,13 @@ docker run -d --gpus all \
   -p 8765:8765 \
   -v ./asr-service/models:/app/models \
   -v ./asr-service/logs:/app/logs \
+  -v ./asr-service/data:/app/data \
   --name qwen3-asr-service \
   lancelrq/qwen3-asr-service:latest \
   --model-size 0.6b --device auto --web
 ```
 
-CPU / ARM64 镜像（`latest-cpu` / `latest-arm64`）与数据卷说明见 [Docker Hub 页面](https://hub.docker.com/r/lancelrq/qwen3-asr-service)。启用任务持久化时建议同时挂载 `/app/data`。
+`/app/data` 存放任务持久化库 `tasks.db` 与声纹库 `speakers.db`，挂出以跨容器重建保留（compose 已默认挂载）。CPU / ARM64 镜像（`latest-cpu` / `latest-arm64`）与更多数据卷说明见 [Docker Hub 页面](https://hub.docker.com/r/lancelrq/qwen3-asr-service)。
 
 ### 使用 docker-compose
 

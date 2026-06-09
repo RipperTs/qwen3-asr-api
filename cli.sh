@@ -706,6 +706,11 @@ default_config() {
     LAUNCH_HOST="127.0.0.1"
     LAUNCH_PORT="8765"
     LAUNCH_API_KEY=""
+    # v2 功能（默认沿用 config.example：实时转写/任务持久化开，说话人/声纹库关）
+    LAUNCH_ENABLE_STREAM="yes"
+    LAUNCH_ENABLE_TASK_STORE="yes"
+    LAUNCH_ENABLE_SPEAKER="no"
+    LAUNCH_ENABLE_SPEAKER_DB="no"
     LAUNCH_METHOD=""
 }
 
@@ -732,6 +737,10 @@ LAUNCH_MAX_SEGMENT="$LAUNCH_MAX_SEGMENT"
 LAUNCH_HOST="$LAUNCH_HOST"
 LAUNCH_PORT="$LAUNCH_PORT"
 LAUNCH_API_KEY="$LAUNCH_API_KEY"
+LAUNCH_ENABLE_STREAM="$LAUNCH_ENABLE_STREAM"
+LAUNCH_ENABLE_TASK_STORE="$LAUNCH_ENABLE_TASK_STORE"
+LAUNCH_ENABLE_SPEAKER="$LAUNCH_ENABLE_SPEAKER"
+LAUNCH_ENABLE_SPEAKER_DB="$LAUNCH_ENABLE_SPEAKER_DB"
 LAUNCH_METHOD="$LAUNCH_METHOD"
 EOF
     success_msg "配置已保存到 .cli_launch_config"
@@ -750,6 +759,10 @@ print_config_summary() {
     printf "  监听地址:     %s\n" "$LAUNCH_HOST"
     printf "  监听端口:     %s\n" "$LAUNCH_PORT"
     printf "  API 密钥:     %s\n" "$([ -n "$LAUNCH_API_KEY" ] && echo "已设置" || echo "未设置（无需认证）")"
+    printf "  实时转写:     %s\n" "$([ "$LAUNCH_ENABLE_STREAM" = "yes" ] && echo "启用" || echo "禁用")"
+    printf "  任务持久化:   %s\n" "$([ "$LAUNCH_ENABLE_TASK_STORE" = "yes" ] && echo "启用" || echo "禁用")"
+    printf "  说话人分离:   %s\n" "$([ "$LAUNCH_ENABLE_SPEAKER" = "yes" ] && echo "启用" || echo "禁用")"
+    printf "  声纹库:       %s\n" "$([ "$LAUNCH_ENABLE_SPEAKER_DB" = "yes" ] && echo "启用" || echo "禁用")"
     if [ -n "$LAUNCH_METHOD" ]; then
         printf "  启动方式:     %s\n" "$LAUNCH_METHOD"
     fi
@@ -843,6 +856,59 @@ configure_launch() {
     read_input "API 密钥（留空则不启用认证）" "$LAUNCH_API_KEY"
     LAUNCH_API_KEY="$INPUT_RESULT"
     echo
+
+    # ── v2 功能开关 ──
+    printf "${BOLD}${CYAN}v2 功能${NC}\n"
+    echo
+
+    # 实时转写
+    show_menu "实时转写（WS /v2/asr/stream）" \
+        "启用 (默认)" \
+        "禁用"
+    case $MENU_RESULT in
+        0) LAUNCH_ENABLE_STREAM="yes" ;;
+        1) LAUNCH_ENABLE_STREAM="no" ;;
+    esac
+    echo
+
+    # 离线任务持久化
+    show_menu "离线任务持久化（data/tasks.db，结果跨重启可查）" \
+        "启用 (默认)" \
+        "禁用"
+    case $MENU_RESULT in
+        0) LAUNCH_ENABLE_TASK_STORE="yes" ;;
+        1) LAUNCH_ENABLE_TASK_STORE="no" ;;
+    esac
+    echo
+
+    # 说话人分离
+    show_menu "说话人分离（匿名 A/B/C…，CPU 推理，模型首次自动下载）" \
+        "禁用 (默认)" \
+        "启用"
+    case $MENU_RESULT in
+        0) LAUNCH_ENABLE_SPEAKER="no" ;;
+        1) LAUNCH_ENABLE_SPEAKER="yes" ;;
+    esac
+    echo
+
+    # 声纹库（依赖说话人分离 + API 密钥）
+    show_menu "声纹库 / 真名识别（data/speakers.db，需说话人分离 + API 密钥）" \
+        "禁用 (默认)" \
+        "启用"
+    case $MENU_RESULT in
+        0) LAUNCH_ENABLE_SPEAKER_DB="no" ;;
+        1) LAUNCH_ENABLE_SPEAKER_DB="yes" ;;
+    esac
+    if [ "$LAUNCH_ENABLE_SPEAKER_DB" = "yes" ]; then
+        if [ "$LAUNCH_ENABLE_SPEAKER" != "yes" ]; then
+            warn_msg "声纹库依赖说话人分离，已自动一并开启"
+            LAUNCH_ENABLE_SPEAKER="yes"
+        fi
+        if [ -z "$LAUNCH_API_KEY" ]; then
+            warn_msg "声纹库需配置 API 密钥（声纹属生物识别信息），否则启动会被拒绝"
+        fi
+    fi
+    echo
 }
 
 build_launch_args() {
@@ -874,6 +940,31 @@ build_launch_args() {
 
     if [ -n "$LAUNCH_API_KEY" ]; then
         args+=" --api-key $LAUNCH_API_KEY"
+    fi
+
+    # v2 功能：显式正/反 flag，覆盖容器内 config.yaml 的默认值
+    if [ "$LAUNCH_ENABLE_STREAM" = "yes" ]; then
+        args+=" --enable-stream"
+    else
+        args+=" --no-stream"
+    fi
+
+    if [ "$LAUNCH_ENABLE_TASK_STORE" = "yes" ]; then
+        args+=" --enable-task-store"
+    else
+        args+=" --no-task-store"
+    fi
+
+    if [ "$LAUNCH_ENABLE_SPEAKER" = "yes" ]; then
+        args+=" --enable-speaker"
+    else
+        args+=" --no-speaker"
+    fi
+
+    if [ "$LAUNCH_ENABLE_SPEAKER_DB" = "yes" ]; then
+        args+=" --enable-speaker-db"
+    else
+        args+=" --no-speaker-db"
     fi
 
     echo "$args"
@@ -941,6 +1032,7 @@ launch_via_docker() {
     -p ${LAUNCH_PORT}:${LAUNCH_PORT} \\
     -v \"${SERVICE_DIR}/models:/app/models\" \\
     -v \"${SERVICE_DIR}/logs:/app/logs\" \\
+    -v \"${SERVICE_DIR}/data:/app/data\" \\
     --name ${CONTAINER_NAME} \\
     ${IMAGE_NAME}:${IMAGE_TAG} \\
     ${docker_args}"
@@ -958,6 +1050,7 @@ launch_via_docker() {
     run_args+=("-p" "${LAUNCH_PORT}:${LAUNCH_PORT}")
     run_args+=("-v" "${SERVICE_DIR}/models:/app/models")
     run_args+=("-v" "${SERVICE_DIR}/logs:/app/logs")
+    run_args+=("-v" "${SERVICE_DIR}/data:/app/data")
     if [ -n "$LAUNCH_API_KEY" ]; then
         run_args+=("-e" "ASR_API_KEY=${LAUNCH_API_KEY}")
     fi

@@ -37,8 +37,8 @@ COPY asr-service/ /app
 COPY docs/ /docs/
 COPY README.md README_zh.md /
 
-# 创建模型挂载目录
-RUN mkdir -p /app/models /app/logs
+# 创建模型 / 日志 / 数据（SQLite 库）挂载目录
+RUN mkdir -p /app/models /app/logs /app/data
 
 EXPOSE 8765
 
