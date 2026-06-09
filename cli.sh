@@ -743,7 +743,6 @@ LAUNCH_ENABLE_SPEAKER="$LAUNCH_ENABLE_SPEAKER"
 LAUNCH_ENABLE_SPEAKER_DB="$LAUNCH_ENABLE_SPEAKER_DB"
 LAUNCH_METHOD="$LAUNCH_METHOD"
 EOF
-    success_msg "配置已保存到 .cli_launch_config"
 }
 
 print_config_summary() {
@@ -769,12 +768,21 @@ print_config_summary() {
     echo "─────────────────────────────────────"
 }
 
-configure_launch() {
-    echo
-    printf "${BOLD}${CYAN}配置启动参数${NC}\n"
-    echo
+# ── 单项编辑：每个参数独立修改，互不影响 ──
 
-    # 模型大小
+yn_label() { [ "$1" = "yes" ] && echo "启用" || echo "禁用"; }
+
+# 翻转 yes/no 布尔变量（间接展开，兼容 bash 3.2）
+toggle_bool() {
+    local name="$1"
+    if [ "${!name}" = "yes" ]; then
+        eval "$name=no"
+    else
+        eval "$name=yes"
+    fi
+}
+
+edit_model_size() {
     show_menu "选择模型大小" \
         "auto (根据显存自动选择)" \
         "0.6b (轻量，显存需求低)" \
@@ -784,9 +792,9 @@ configure_launch() {
         1) LAUNCH_MODEL_SIZE="0.6b" ;;
         2) LAUNCH_MODEL_SIZE="1.7b" ;;
     esac
-    echo
+}
 
-    # 运行设备
+edit_device() {
     show_menu "选择运行设备" \
         "auto (自动检测)" \
         "cuda (GPU)" \
@@ -796,9 +804,9 @@ configure_launch() {
         1) LAUNCH_DEVICE="cuda" ;;
         2) LAUNCH_DEVICE="cpu" ;;
     esac
-    echo
+}
 
-    # 模型下载源
+edit_model_source() {
     show_menu "选择模型下载源" \
         "modelscope (国内推荐)" \
         "huggingface (国外)"
@@ -806,109 +814,176 @@ configure_launch() {
         0) LAUNCH_MODEL_SOURCE="modelscope" ;;
         1) LAUNCH_MODEL_SOURCE="huggingface" ;;
     esac
-    echo
+}
 
-    # 对齐模型
-    show_menu "对齐模型" \
-        "启用 (默认，支持字级时间戳)" \
-        "禁用"
-    case $MENU_RESULT in
-        0) LAUNCH_ENABLE_ALIGN="yes" ;;
-        1) LAUNCH_ENABLE_ALIGN="no" ;;
+# 面板行左侧标签（值类项预留对齐空格；start/back 无值不补齐）
+panel_label() {
+    case "$1" in
+        start)        printf "%s" "$2" ;;
+        back)         printf "返回（不启动）" ;;
+        model_size)   printf "模型大小      " ;;
+        device)       printf "运行设备      " ;;
+        model_source) printf "模型下载源    " ;;
+        align)        printf "对齐模型      " ;;
+        punc)         printf "标点恢复      " ;;
+        web)          printf "Web UI        " ;;
+        max_segment)  printf "最大切片时长  " ;;
+        host)         printf "监听地址      " ;;
+        port)         printf "监听端口      " ;;
+        api_key)      printf "API 密钥      " ;;
+        stream)       printf "实时转写      " ;;
+        task_store)   printf "任务持久化    " ;;
+        speaker)      printf "说话人分离    " ;;
+        speaker_db)   printf "声纹库        " ;;
     esac
-    echo
+}
 
-    # 标点恢复
-    show_menu "标点恢复" \
-        "禁用 (默认)" \
-        "启用"
-    case $MENU_RESULT in
-        0) LAUNCH_USE_PUNC="no" ;;
-        1) LAUNCH_USE_PUNC="yes" ;;
+# 面板行右侧当前值（start/back 返回空串）
+panel_value() {
+    case "$1" in
+        model_size)   printf "%s" "$LAUNCH_MODEL_SIZE" ;;
+        device)       printf "%s" "$LAUNCH_DEVICE" ;;
+        model_source) printf "%s" "$LAUNCH_MODEL_SOURCE" ;;
+        align)        yn_label "$LAUNCH_ENABLE_ALIGN" ;;
+        punc)         yn_label "$LAUNCH_USE_PUNC" ;;
+        web)          yn_label "$LAUNCH_WEB" ;;
+        max_segment)  printf "%s 秒" "$LAUNCH_MAX_SEGMENT" ;;
+        host)         printf "%s" "$LAUNCH_HOST" ;;
+        port)         printf "%s" "$LAUNCH_PORT" ;;
+        api_key)      [ -n "$LAUNCH_API_KEY" ] && printf "已设置" || printf "未设置" ;;
+        stream)       yn_label "$LAUNCH_ENABLE_STREAM" ;;
+        task_store)   yn_label "$LAUNCH_ENABLE_TASK_STORE" ;;
+        speaker)      yn_label "$LAUNCH_ENABLE_SPEAKER" ;;
+        speaker_db)   yn_label "$LAUNCH_ENABLE_SPEAKER_DB" ;;
     esac
-    echo
+}
 
-    # Web UI
-    show_menu "Web UI" \
-        "启用 (访问 /web-ui)" \
-        "禁用"
-    case $MENU_RESULT in
-        0) LAUNCH_WEB="yes" ;;
-        1) LAUNCH_WEB="no" ;;
+# 值类项编辑（子菜单或输入），复用既有 edit_* 与 read_input
+panel_edit() {
+    case "$1" in
+        model_size)   edit_model_size ;;
+        device)       edit_device ;;
+        model_source) edit_model_source ;;
+        max_segment)  read_input "VAD 切片合并最大时长（秒）" "$LAUNCH_MAX_SEGMENT"; LAUNCH_MAX_SEGMENT="$INPUT_RESULT" ;;
+        host)         read_input "监听地址" "$LAUNCH_HOST"; LAUNCH_HOST="$INPUT_RESULT" ;;
+        port)         read_input "监听端口" "$LAUNCH_PORT"; LAUNCH_PORT="$INPUT_RESULT" ;;
+        api_key)      read_input "API 密钥（留空则不启用认证）" "$LAUNCH_API_KEY"; LAUNCH_API_KEY="$INPUT_RESULT" ;;
     esac
-    echo
+}
 
-    # 最大切片时长
-    read_input "VAD 切片合并最大时长（秒）" "$LAUNCH_MAX_SEGMENT"
-    LAUNCH_MAX_SEGMENT="$INPUT_RESULT"
-    echo
-
-    # 监听地址
-    read_input "监听地址" "$LAUNCH_HOST"
-    LAUNCH_HOST="$INPUT_RESULT"
-
-    # 监听端口
-    read_input "监听端口" "$LAUNCH_PORT"
-    LAUNCH_PORT="$INPUT_RESULT"
-    echo
-
-    # API 密钥
-    read_input "API 密钥（留空则不启用认证）" "$LAUNCH_API_KEY"
-    LAUNCH_API_KEY="$INPUT_RESULT"
-    echo
-
-    # ── v2 功能开关 ──
-    printf "${BOLD}${CYAN}v2 功能${NC}\n"
-    echo
-
-    # 实时转写
-    show_menu "实时转写（WS /v2/asr/stream）" \
-        "启用 (默认)" \
-        "禁用"
-    case $MENU_RESULT in
-        0) LAUNCH_ENABLE_STREAM="yes" ;;
-        1) LAUNCH_ENABLE_STREAM="no" ;;
+# 配置面板：自带按键循环，方向键选行、空格/回车就地切换或编辑，
+# 选「启动」按当前配置运行；开关翻转后光标停在原行、即时刷新、不弹提示
+config_panel() {
+    local method="$1"
+    local start_label
+    case "$method" in
+        docker) start_label="▶ 启动 Docker 容器（按当前配置）" ;;
+        *)      start_label="▶ 启动服务（按当前配置）" ;;
     esac
-    echo
 
-    # 离线任务持久化
-    show_menu "离线任务持久化（data/tasks.db，结果跨重启可查）" \
-        "启用 (默认)" \
-        "禁用"
-    case $MENU_RESULT in
-        0) LAUNCH_ENABLE_TASK_STORE="yes" ;;
-        1) LAUNCH_ENABLE_TASK_STORE="no" ;;
-    esac
-    echo
+    local keys=(start model_size device model_source align punc web \
+                max_segment host port api_key stream task_store \
+                speaker speaker_db back)
+    local nrows=${#keys[@]}
+    local selected=0 first_draw=1 hint=""
 
-    # 说话人分离
-    show_menu "说话人分离（匿名 A/B/C…，CPU 推理，模型首次自动下载）" \
-        "禁用 (默认)" \
-        "启用"
-    case $MENU_RESULT in
-        0) LAUNCH_ENABLE_SPEAKER="no" ;;
-        1) LAUNCH_ENABLE_SPEAKER="yes" ;;
-    esac
-    echo
+    printf '\033[?25l'   # 隐藏光标
+    clear                # 清屏，面板独占一屏，避免与上层菜单残留叠加
 
-    # 声纹库（依赖说话人分离 + API 密钥）
-    show_menu "声纹库 / 真名识别（data/speakers.db，需说话人分离 + API 密钥）" \
-        "禁用 (默认)" \
-        "启用"
-    case $MENU_RESULT in
-        0) LAUNCH_ENABLE_SPEAKER_DB="no" ;;
-        1) LAUNCH_ENABLE_SPEAKER_DB="yes" ;;
-    esac
-    if [ "$LAUNCH_ENABLE_SPEAKER_DB" = "yes" ]; then
-        if [ "$LAUNCH_ENABLE_SPEAKER" != "yes" ]; then
-            warn_msg "声纹库依赖说话人分离，已自动一并开启"
-            LAUNCH_ENABLE_SPEAKER="yes"
-        fi
-        if [ -z "$LAUNCH_API_KEY" ]; then
-            warn_msg "声纹库需配置 API 密钥（声纹属生物识别信息），否则启动会被拒绝"
-        fi
-    fi
-    echo
+    while true; do
+        # 就地重绘：非首次绘制时上移（标题+空行+nrows+提示行）
+        [ "$first_draw" -eq 0 ] && printf '\033[%dA' $((nrows + 3))
+        first_draw=0
+
+        printf '\033[2K'
+        printf "${BOLD}${CYAN}配置启动参数${NC} ${DIM}· ↑↓ 选择 · 空格/回车 修改 · 选「启动」运行${NC}\n"
+        printf '\033[2K\n'
+
+        local i k label val line
+        for i in "${!keys[@]}"; do
+            k="${keys[$i]}"
+            label=$(panel_label "$k" "$start_label")
+            val=$(panel_value "$k")
+            if [ -n "$val" ]; then line="${label}: ${val}"; else line="$label"; fi
+            printf '\033[2K'
+            if [ "$i" -eq "$selected" ]; then
+                printf "  ${REVERSE} %s ${NC}\n" "$line"
+            else
+                printf "    %s\n" "$line"
+            fi
+        done
+
+        printf '\033[2K'
+        printf "  ${DIM}%s${NC}\n" "$hint"
+        hint=""
+
+        local key rest
+        IFS= read -rsn1 key || { printf '\033[?25h'; exit 0; }
+        case "$key" in
+            $'\x1b')                 # 方向键
+                read -rsn2 -t 0.1 rest || true
+                case "$rest" in
+                    '[A') selected=$(( (selected - 1 + nrows) % nrows )) ;;
+                    '[B') selected=$(( (selected + 1) % nrows )) ;;
+                esac
+                ;;
+            ' '|'')                  # 空格 或 回车
+                case "${keys[$selected]}" in
+                    start)
+                        printf '\033[?25h'
+                        save_launch_config
+                        echo; print_config_summary; echo
+                        case "$method" in
+                            docker) launch_via_docker ;;
+                            venv)   launch_via_venv ;;
+                        esac
+                        return
+                        ;;
+                    back)
+                        printf '\033[?25h'
+                        return
+                        ;;
+                    align)      toggle_bool LAUNCH_ENABLE_ALIGN;      save_launch_config ;;
+                    punc)       toggle_bool LAUNCH_USE_PUNC;          save_launch_config ;;
+                    web)        toggle_bool LAUNCH_WEB;               save_launch_config ;;
+                    stream)     toggle_bool LAUNCH_ENABLE_STREAM;     save_launch_config ;;
+                    task_store) toggle_bool LAUNCH_ENABLE_TASK_STORE; save_launch_config ;;
+                    speaker)
+                        toggle_bool LAUNCH_ENABLE_SPEAKER
+                        # 关闭说话人分离时，依赖它的声纹库一并关闭
+                        if [ "$LAUNCH_ENABLE_SPEAKER" != "yes" ] && [ "$LAUNCH_ENABLE_SPEAKER_DB" = "yes" ]; then
+                            LAUNCH_ENABLE_SPEAKER_DB="no"
+                            hint="声纹库依赖说话人分离，已一并关闭"
+                        fi
+                        save_launch_config
+                        ;;
+                    speaker_db)
+                        toggle_bool LAUNCH_ENABLE_SPEAKER_DB
+                        if [ "$LAUNCH_ENABLE_SPEAKER_DB" = "yes" ]; then
+                            if [ "$LAUNCH_ENABLE_SPEAKER" != "yes" ]; then
+                                LAUNCH_ENABLE_SPEAKER="yes"
+                                hint="已自动开启说话人分离（声纹库依赖）"
+                            fi
+                            if [ -z "$LAUNCH_API_KEY" ]; then
+                                [ -n "$hint" ] && hint="$hint；"
+                                hint="${hint}声纹库需配置 API 密钥，否则启动会被拒绝"
+                            fi
+                        fi
+                        save_launch_config
+                        ;;
+                    *)                # 值类项：进入子编辑（子菜单/输入）后清屏重绘
+                        printf '\033[?25h'
+                        echo
+                        panel_edit "${keys[$selected]}"
+                        save_launch_config
+                        printf '\033[?25l'
+                        clear         # 抹掉子编辑输出与旧帧，面板回到屏顶重绘
+                        first_draw=1
+                        ;;
+                esac
+                ;;
+        esac
+    done
 }
 
 build_launch_args() {
@@ -1076,46 +1151,9 @@ launch_wizard() {
     local method="$1"
     echo
     default_config
-
-    if load_launch_config; then
-        LAUNCH_METHOD="$method"      # 方式以当前菜单为准（覆盖已保存值）
-        printf "${GREEN}检测到已保存的启动配置：${NC}\n"
-        echo
-        print_config_summary
-        echo
-
-        show_menu "选择操作" \
-            "使用已保存配置启动" \
-            "重新配置" \
-            "返回"
-
-        case $MENU_RESULT in
-            0) : ;;                  # 沿用已保存配置
-            1)
-                configure_launch
-                LAUNCH_METHOD="$method"
-                save_launch_config
-                ;;
-            2)
-                return
-                ;;
-        esac
-    else
-        # 无配置，进入配置流程
-        configure_launch
-        LAUNCH_METHOD="$method"
-        save_launch_config
-    fi
-
-    # 确认并启动
-    echo
-    print_config_summary
-    echo
-
-    case "$method" in
-        docker) launch_via_docker ;;
-        venv)   launch_via_venv ;;
-    esac
+    load_launch_config || true       # 有保存则覆盖默认值，无则用默认
+    LAUNCH_METHOD="$method"          # 启动方式以当前入口为准
+    config_panel "$method"
 }
 
 # venv 方式启动入口（供「Venv 虚拟环境方式」子菜单调用）
