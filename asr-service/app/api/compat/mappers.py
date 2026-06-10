@@ -177,3 +177,48 @@ def result_to_dashscope_transcript(result: dict, file_url: str) -> dict:
             "sentences": [_dashscope_sentence(i, seg) for i, seg in enumerate(segments)],
         }],
     }
+
+
+# ─── 实时（Phase 3 Stage A：route B 整句 final）───
+#
+# 单位红线：实时 final 顶层 start/end 已是**毫秒**(int，stream_session.py:387)，直取；
+# final.words[].start/end 是**秒**(extract_words(res, start_ms/1000))，→毫秒需 ×1000。
+
+def _realtime_words_ms(final: dict) -> list[dict]:
+    """final.words（秒）→ DashScope words（毫秒）。"""
+    return [{
+        "begin_time": sec_to_ms(w.get("start")),
+        "end_time": sec_to_ms(w.get("end")),
+        "text": w.get("text", ""),
+        "punctuation": "",
+    } for w in (final.get("words") or [])]
+
+
+def final_to_openai_completed(final: dict, item_id: str) -> dict:
+    """实时 final → OpenAI `conversation.item.input_audio_transcription.completed`。
+
+    OpenAI completed 仅含整句 transcript（无词级，design §11.3）。
+    """
+    return {
+        "type": "conversation.item.input_audio_transcription.completed",
+        "item_id": item_id,
+        "content_index": 0,
+        "transcript": final.get("text", ""),
+    }
+
+
+def final_to_dashscope_result(final: dict, task_id: str) -> dict:
+    """实时 final → DashScope `result-generated`（sentence_end=true，整句）。"""
+    sentence = {
+        "begin_time": final.get("start"),   # 顶层已是毫秒，直取
+        "end_time": final.get("end"),
+        "text": final.get("text", ""),
+        "sentence_end": True,
+    }
+    words = _realtime_words_ms(final)
+    if words:
+        sentence["words"] = words
+    return {
+        "header": {"task_id": task_id, "event": "result-generated", "attributes": {}},
+        "payload": {"output": {"sentence": sentence}, "usage": None},
+    }

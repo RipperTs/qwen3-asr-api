@@ -459,10 +459,22 @@ def _assemble_standard(app: FastAPI, args) -> None:
         from app.api.compat.openai_routes import build_openai_router
         app.include_router(build_openai_router())
         logger.info("OpenAI 兼容接口已启用：/compat/openai/v1/*")
+        if stream_backend is not None:
+            from app.api.compat.openai_ws_routes import build_openai_ws_router
+            app.include_router(build_openai_ws_router())
+            logger.info("OpenAI 实时兼容已启用：WS /compat/openai/v1/realtime（整句，无逐字增量）")
+        elif stream_enabled is False:
+            logger.info("OpenAI 实时兼容未挂载：需 --enable-stream")
     if enable_dashscope:
         from app.api.compat.dashscope_routes import build_dashscope_router
         app.include_router(build_dashscope_router())
         logger.info("DashScope 兼容接口已启用：/compat/dashscope/api/v1/*")
+        if stream_backend is not None:
+            from app.api.compat.dashscope_ws_routes import build_dashscope_ws_router
+            app.include_router(build_dashscope_ws_router())
+            logger.info("DashScope 实时兼容已启用：WS /compat/dashscope/api-ws/v1/inference（整句，无中间结果）")
+        elif stream_enabled is False:
+            logger.info("DashScope 实时兼容未挂载：需 --enable-stream")
 
     # 条件挂载 Web UI
     if getattr(args, "web", False):
