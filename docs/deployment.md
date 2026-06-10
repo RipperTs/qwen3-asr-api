@@ -9,7 +9,7 @@
 - [Windows 部署（Python Embeddable）](#windows-部署python-embeddable)
 - [启用 API 认证](#启用-api-认证)
 - [Docker 部署](#docker-部署)
-- [交互式 CLI 管理](#交互式-cli-管理)
+- [交互式管理脚本](#交互式管理脚本)
 - [验证服务](#验证服务)
 - [三种运行模式](#三种运行模式)
 - [CPU 模式说明](#cpu-模式说明)
@@ -164,19 +164,19 @@ docker compose -f docker/docker-compose.yml down
 bash docker/build.sh
 ```
 
-## 交互式 CLI 管理
+## 交互式管理脚本
 
 项目在仓库根目录提供交互式管理脚本，统一管理 Docker 和本地 venv 两种运行方式：
 
 ```bash
 # Linux / macOS
-bash cli.sh
+bash manage.sh
 
 # Windows
-cli.bat
+.\manage.ps1
 ```
 
-CLI 管理脚本支持：
+管理脚本支持：
 
 - **Docker Compose 启动（config.yaml 驱动，推荐）**：首次使用自动从 `config.example.yaml` 生成 `config.yaml`，可直接编辑配置后启动/停止/重启容器、查看日志、切换 GPU/CPU 编排
 - Docker 管理（拉取/构建镜像、参数向导启动/停止容器、查看日志）

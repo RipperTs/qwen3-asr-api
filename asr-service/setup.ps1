@@ -166,7 +166,7 @@ function Install-PyTorch {
 
     # GPU：requirements.txt 中的 torch==2.6.0 被 pip 解析为 CPU 版，需替换为 CUDA 版。
     # --target（便携）模式下 pip 既不会用 CUDA 版覆盖已存在的包，--force-reinstall 也不替换
-    # 包文件，必须先手动删除旧 torch 目录与 dist-info，再以 --no-deps 安装（与 cli.ps1 一致）。
+    # 包文件，必须先手动删除旧 torch 目录与 dist-info，再以 --no-deps 安装（与 manage.ps1 一致）。
     Write-Host
     Write-Host '[INFO] Installing CUDA PyTorch (this may take several minutes)...' -ForegroundColor Cyan
 

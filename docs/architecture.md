@@ -61,7 +61,7 @@ asr-service/
 └── requirements.txt               # 依赖清单
 
 # 项目根目录
-├── cli.sh / cli.bat                # 交互式管理脚本（Compose / venv / 启动服务统一入口）
+├── manage.sh / manage.ps1                # 交互式管理脚本（Compose / venv / 启动服务统一入口）
 ├── docker/                         # Docker 资产目录（集中存放，保持根目录整洁）
 │   ├── Dockerfile / Dockerfile.cpu     # GPU / CPU 镜像构建
 │   ├── docker-compose.yml / *.cpu.yml  # Docker Compose 编排

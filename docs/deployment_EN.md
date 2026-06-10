@@ -9,7 +9,7 @@
 - [Windows Deployment (Python Embeddable)](#windows-deployment-python-embeddable)
 - [Enable API Authentication](#enable-api-authentication)
 - [Docker Deployment](#docker-deployment)
-- [Interactive CLI Management](#interactive-cli-management)
+- [Interactive Management Script](#interactive-management-script)
 - [Verify the Service](#verify-the-service)
 - [Three Operation Modes](#three-operation-modes)
 - [CPU Mode Details](#cpu-mode-details)
@@ -164,19 +164,19 @@ Startup parameters, API keys, port mappings, etc. can be configured in `docker/d
 bash docker/build.sh
 ```
 
-## Interactive CLI Management
+## Interactive Management Script
 
 The project provides interactive management scripts in the repository root for unified management of both Docker and local venv environments:
 
 ```bash
 # Linux / macOS
-bash cli.sh
+bash manage.sh
 
 # Windows
-cli.bat
+.\manage.ps1
 ```
 
-CLI management script features:
+Management script features:
 
 - **Docker Compose start (config.yaml-driven, recommended)**: on first use, auto-generates `config.yaml` from `config.example.yaml`; edit the config then start/stop/restart the container, view logs, switch GPU/CPU compose
 - Docker management (pull/build images, parameter-wizard start/stop containers, view logs)

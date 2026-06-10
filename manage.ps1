@@ -4,7 +4,7 @@
     Qwen3-ASR Service Interactive Management Tool (PowerShell)
 .DESCRIPTION
     Unified management entry point supporting Docker Compose / Docker / venv modes.
-    Reference: cli.sh (v2 version with speaker, stream, task-store features).
+    Reference: manage.sh (v2 version with speaker, stream, task-store features).
 #>
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -944,7 +944,7 @@ function Import-LaunchConfig {
 function Export-LaunchConfig {
     $content = @(
         '# Qwen3-ASR CLI 启动配置'
-        '# 由 cli.ps1 自动生成，可手动编辑'
+        '# 由 manage.ps1 自动生成，可手动编辑'
         "LAUNCH_MODEL_SIZE=`"$($script:Launch.ModelSize)`""
         "LAUNCH_DEVICE=`"$($script:Launch.Device)`""
         "LAUNCH_MODEL_SOURCE=`"$($script:Launch.ModelSource)`""

@@ -61,7 +61,7 @@ asr-service/
 └── requirements.txt               # Dependencies
 
 # Project root
-├── cli.sh / cli.bat                # Interactive management script (Compose / venv / start service)
+├── manage.sh / manage.ps1                # Interactive management script (Compose / venv / start service)
 ├── docker/                         # Docker assets directory (centralized, keeps root clean)
 │   ├── Dockerfile / Dockerfile.cpu     # GPU / CPU image build
 │   ├── docker-compose.yml / *.cpu.yml  # Docker Compose orchestration

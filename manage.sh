@@ -726,7 +726,7 @@ load_launch_config() {
 save_launch_config() {
     cat > "$CONFIG_FILE" <<EOF
 # Qwen3-ASR CLI 启动配置
-# 由 cli.sh 自动生成，可手动编辑
+# 由 manage.sh 自动生成，可手动编辑
 LAUNCH_MODEL_SIZE="$LAUNCH_MODEL_SIZE"
 LAUNCH_DEVICE="$LAUNCH_DEVICE"
 LAUNCH_MODEL_SOURCE="$LAUNCH_MODEL_SOURCE"
