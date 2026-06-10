@@ -137,17 +137,22 @@ show_menu() {
         IFS= read -rsn1 key || exit 0  # Ctrl+D 退出
 
         case "$key" in
-            $'\x1b')  # 转义序列开头
-                local rest
-                read -rsn2 -t 0.1 rest || true
-                case "$rest" in
-                    '[A')  # 上箭头
-                        selected=$(( (selected - 1 + count) % count ))
-                        ;;
-                    '[B')  # 下箭头
-                        selected=$(( (selected + 1) % count ))
-                        ;;
-                esac
+            $'\x1b')  # 转义序列开头（方向键为 ESC [ A/B）
+                # 逐字节读取，超时用整数秒以兼容 macOS 自带 Bash 3.2
+                # （Bash 3.2 的 read -t 不支持小数，-t 0.1 会报错导致方向键失效）
+                local b2 b3
+                read -rsn1 -t 1 b2 || true
+                if [ "$b2" = '[' ]; then
+                    read -rsn1 -t 1 b3 || true
+                    case "$b3" in
+                        'A')  # 上箭头
+                            selected=$(( (selected - 1 + count) % count ))
+                            ;;
+                        'B')  # 下箭头
+                            selected=$(( (selected + 1) % count ))
+                            ;;
+                    esac
+                fi
                 ;;
             '')  # Enter
                 break
