@@ -1060,7 +1060,9 @@ launch_via_venv() {
     printf "  bash start.sh%s\n" "$args"
     echo
 
-    (cd "$SERVICE_DIR" && bash start.sh $args)
+    # || true：start.sh 非零退出（Ctrl-C 停服 / 端口占用 / 模型加载失败）不应触发
+    # set -e 下的 EXIT trap 终止整个 CLI，应返回菜单（与 docker/install 各路径一致）
+    (cd "$SERVICE_DIR" && bash start.sh $args) || true
 }
 
 launch_via_docker() {
@@ -1093,10 +1095,10 @@ launch_via_docker() {
     fi
 
     # 构建 docker run 命令
-    local docker_host="$LAUNCH_HOST"
-    # Docker 容器内需要监听 0.0.0.0 才能从外部访问
+    # Docker 容器内需监听 0.0.0.0 才能从外部访问；临时覆盖 LAUNCH_HOST 重建参数，
+    # 避免对用户输入的 host 做 sed 正则替换（含 / 或正则元字符会破坏整串参数）
     local docker_args
-    docker_args=$(build_launch_args | sed "s/--host $LAUNCH_HOST/--host 0.0.0.0/")
+    docker_args=$(LAUNCH_HOST="0.0.0.0" build_launch_args)
 
     local gpu_flag=""
     if [ "$HAS_GPU" -eq 1 ]; then
