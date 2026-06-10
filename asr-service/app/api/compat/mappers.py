@@ -2,9 +2,18 @@
 
 数据源：pipeline result dict（asr_pipeline.py:209）——`segments[].start/end` = **秒**(float)，
 `segments[].words[].start/end` = 秒。OpenAI verbose_json 全用秒，直取；srt/vtt 由秒格式化为
-时间轴。DashScope（Phase 2，毫秒）与实时（Phase 3）映射后续并入本模块。
+时间轴。DashScope 全用**毫秒**（秒×1000）。实时（Phase 3）映射后续并入本模块。
 """
 from __future__ import annotations
+
+# v2 内部任务状态 → DashScope task_status（design §7.2）
+_V2_TO_DASHSCOPE = {
+    "pending": "PENDING",
+    "processing": "RUNNING",
+    "completed": "SUCCEEDED",
+    "failed": "FAILED",
+    "cancelled": "FAILED",   # message 另行注明 cancelled
+}
 
 
 def _fmt_timestamp(seconds: float | None, *, sep: str = ",") -> str:
@@ -100,3 +109,71 @@ def result_to_vtt(segments: list[dict]) -> str:
         end = _fmt_timestamp(seg.get("end", 0.0), sep=".")
         lines += [f"{start} --> {end}", seg.get("text", ""), ""]
     return "\n".join(lines)
+
+
+# ─── DashScope（全用毫秒）───
+
+def sec_to_ms(x: float | None) -> int:
+    """秒 → 毫秒（四舍五入取整）；None 视为 0。"""
+    return int(round((x or 0.0) * 1000))
+
+
+def v2status_to_dashscope(status: str | None) -> str:
+    """v2 内部任务状态 → DashScope task_status；未知状态保守映射 PENDING。"""
+    return _V2_TO_DASHSCOPE.get(status or "", "PENDING")
+
+
+def _speaker_to_int(label) -> int | None:
+    """说话人标签（A/B/C… 或已是整数）→ DashScope 整型 speaker_id。"""
+    if label is None:
+        return None
+    if isinstance(label, int):
+        return label
+    s = str(label).strip()
+    if s.isdigit():
+        return int(s)
+    if len(s) == 1 and s.isalpha():
+        return ord(s.upper()) - ord("A")   # A→0, B→1 …
+    return None
+
+
+def _dashscope_sentence(idx: int, seg: dict) -> dict:
+    """单段 → DashScope sentence（毫秒）。speaker_id 仅 diarize 命中时有意义。"""
+    sentence = {
+        "begin_time": sec_to_ms(seg.get("start")),
+        "end_time": sec_to_ms(seg.get("end")),
+        "text": seg.get("text", ""),
+        "sentence_id": idx + 1,
+    }
+    spk = _speaker_to_int(seg.get("speaker"))
+    if spk is not None:
+        sentence["speaker_id"] = spk
+    words = seg.get("words") or []
+    if words:
+        sentence["words"] = [{
+            "begin_time": sec_to_ms(w.get("start")),
+            "end_time": sec_to_ms(w.get("end")),
+            "text": w.get("text", ""),
+            "punctuation": "",
+        } for w in words]
+    return sentence
+
+
+def result_to_dashscope_transcript(result: dict, file_url: str) -> dict:
+    """pipeline result → DashScope 转写结果文档（transcription_url 内容，毫秒）。"""
+    segments = result.get("segments") or []
+    return {
+        "file_url": file_url,
+        "properties": {
+            "audio_format": "wav",
+            "channels": [0],
+            "original_sampling_rate": 16000,
+            "original_duration_in_milliseconds": sec_to_ms(_duration(segments)),
+        },
+        "transcripts": [{
+            "channel_id": 0,
+            "content_duration_in_milliseconds": sec_to_ms(_duration(segments)),
+            "text": result.get("full_text", ""),
+            "sentences": [_dashscope_sentence(i, seg) for i, seg in enumerate(segments)],
+        }],
+    }

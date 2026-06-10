@@ -135,6 +135,14 @@ def _apply_cli_config(args):
     cfg.ENABLE_OPENAI_API = getattr(args, "enable_openai_api", False)
     if getattr(args, "openai_sync_timeout", None) is not None:
         cfg.OPENAI_SYNC_TIMEOUT = args.openai_sync_timeout
+    cfg.ENABLE_DASHSCOPE_API = getattr(args, "enable_dashscope_api", False)
+    if getattr(args, "compat_fetch_max_mb", None) is not None:
+        cfg.COMPAT_FETCH_MAX_MB = args.compat_fetch_max_mb
+    if getattr(args, "compat_fetch_timeout", None) is not None:
+        cfg.COMPAT_FETCH_TIMEOUT = args.compat_fetch_timeout
+    cfg.COMPAT_FETCH_ALLOW_PRIVATE = getattr(args, "compat_fetch_allow_private", False)
+    if getattr(args, "compat_external_base_url", None) is not None:
+        cfg.COMPAT_EXTERNAL_BASE_URL = args.compat_external_base_url
     if cfg.API_KEY:
         logger.info("API 密钥已配置，Bearer token 认证已启用")
 
@@ -439,15 +447,22 @@ def _assemble_standard(app: FastAPI, args) -> None:
         logger.info("实时转写已启用：WS /v2/asr/stream（路线B / vad-offline）")
 
     # 兼容接口（/compat/*）：可选挂载，与 v1/v2 完全隔离（错误信封按异常类型分派）
-    if getattr(args, "enable_openai_api", False):
+    enable_openai = getattr(args, "enable_openai_api", False)
+    enable_dashscope = getattr(args, "enable_dashscope_api", False)
+    if enable_openai or enable_dashscope:
         from app.api.compat import init_compat
         from app.api.compat.errors import register_compat_exception_handlers
-        from app.api.compat.openai_routes import build_openai_router
         init_compat(task_manager=task_manager, task_store=task_store,
                     backend=stream_backend, service_info=service_info)
         register_compat_exception_handlers(app)
+    if enable_openai:
+        from app.api.compat.openai_routes import build_openai_router
         app.include_router(build_openai_router())
         logger.info("OpenAI 兼容接口已启用：/compat/openai/v1/*")
+    if enable_dashscope:
+        from app.api.compat.dashscope_routes import build_dashscope_router
+        app.include_router(build_dashscope_router())
+        logger.info("DashScope 兼容接口已启用：/compat/dashscope/api/v1/*")
 
     # 条件挂载 Web UI
     if getattr(args, "web", False):

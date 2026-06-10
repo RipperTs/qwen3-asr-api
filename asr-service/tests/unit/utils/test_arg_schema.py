@@ -52,6 +52,11 @@ LEGACY_DEFAULTS = {
     # ── 兼容接口（/compat/*）新增，非重构前遗留 ──
     "enable_openai_api": False,
     "openai_sync_timeout": 300,
+    "enable_dashscope_api": False,
+    "compat_fetch_max_mb": None,
+    "compat_fetch_timeout": 120,
+    "compat_fetch_allow_private": False,
+    "compat_external_base_url": None,
 }
 
 

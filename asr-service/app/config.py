@@ -110,6 +110,11 @@ TASK_CLEANUP_INTERVAL = 300     # 清理扫描间隔（秒），默认 5 分钟
 
 ENABLE_OPENAI_API = False        # 挂载 OpenAI 兼容接口 /compat/openai/v1/*
 OPENAI_SYNC_TIMEOUT = 300        # OpenAI 同步转写等待上限（秒），超时返回 504
+ENABLE_DASHSCOPE_API = False     # 挂载 DashScope 兼容接口 /compat/dashscope/api/v1/*
+COMPAT_FETCH_MAX_MB = None       # DashScope file_urls 下载大小上限 MB（None=同 MAX_AUDIO_FILE_SIZE）
+COMPAT_FETCH_TIMEOUT = 120       # file_urls 下载整体超时（秒）
+COMPAT_FETCH_ALLOW_PRIVATE = False  # 允许下载私网地址（SSRF 默认禁止）
+COMPAT_EXTERNAL_BASE_URL = None  # 兼容层回链外部基址（反代/容器；None=按请求推导）
 
 # ─── serve-mode ───
 

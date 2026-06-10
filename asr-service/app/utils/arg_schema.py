@@ -226,6 +226,34 @@ ARG_SPECS = (
         group="兼容接口",
         help="OpenAI 同步转写等待上限，单位秒；超时返回 504 (default: 300)",
     ),
+    ArgSpec(
+        key="enable_dashscope_api", flags=("--enable-dashscope-api",), default=False, type=bool,
+        group="兼容接口",
+        help="启用 DashScope 兼容接口 /compat/dashscope/api/v1/*（drop-in 对接 DashScope SDK）",
+        negative_flags=("--no-dashscope-api",), negative_help="关闭 DashScope 兼容接口（覆盖配置文件）",
+    ),
+    ArgSpec(
+        key="compat_fetch_max_mb", flags=("--compat-fetch-max-mb",), default=None, type=int,
+        group="兼容接口",
+        help="DashScope file_urls 下载大小上限 MB (default: 同 MAX_AUDIO_FILE_SIZE)",
+    ),
+    ArgSpec(
+        key="compat_fetch_timeout", flags=("--compat-fetch-timeout",), default=120, type=int,
+        group="兼容接口",
+        help="DashScope file_urls 下载整体超时秒 (default: 120)",
+    ),
+    ArgSpec(
+        key="compat_fetch_allow_private", flags=("--compat-fetch-allow-private",),
+        default=False, type=bool, group="兼容接口",
+        help="允许 file_urls 下载私网/回环地址（SSRF 默认禁止）",
+        negative_flags=("--no-compat-fetch-allow-private",),
+        negative_help="禁止下载私网地址（覆盖配置文件）",
+    ),
+    ArgSpec(
+        key="compat_external_base_url", flags=("--compat-external-base-url",),
+        default=None, group="兼容接口",
+        help="兼容层回链外部基址（如 https://asr.example.com，反代/容器场景；默认按请求推导）",
+    ),
 )
 
 
