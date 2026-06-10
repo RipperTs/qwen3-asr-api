@@ -98,15 +98,17 @@ Windows can use the Python Embeddable Package for standalone portable deployment
 
 1. Download the [Python 3.12 Embeddable Package](https://www.python.org/downloads/windows/) and place it in the `bin/` directory
 2. Download [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) and place `ffmpeg.exe` in the `bin/` directory
-3. Run the initialization script:
-   ```cmd
+3. Run the initialization script (PowerShell):
+   ```powershell
    cd asr-service
-   setup.bat
+   .\setup.ps1
    ```
 4. Start the service:
-   ```cmd
-   start.bat --device cuda --model-size 0.6b --host 0.0.0.0
+   ```powershell
+   .\start.ps1 --device cuda --model-size 0.6b --host 0.0.0.0
    ```
+
+> 💡 The PowerShell scripts (`.ps1`) are recommended. The same-named `.bat` files (`setup.bat` / `start.bat`) are kept only for legacy cmd compatibility and are not guaranteed to run on newer setups — switch to `.ps1` if you hit issues. If the first `.ps1` run is blocked by execution policy, use `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.
 
 ## Enable API Authentication
 

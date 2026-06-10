@@ -22,7 +22,7 @@ For contributors: dev environment, testing, end-to-end smoke, key code conventio
 
 ## 1. Dev environment
 
-- **Python 3.12** (strict, matching `setup.bat`/`setup.ps1`).
+- **Python 3.12** (strict, matching `setup.ps1`/`setup.bat`).
 - Recommended virtualenv:
 
 ```bash

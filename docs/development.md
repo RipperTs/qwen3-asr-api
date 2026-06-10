@@ -22,7 +22,7 @@
 
 ## 1. 开发环境
 
-- **Python 3.12**（严格要求，与 `setup.bat`/`setup.ps1` 一致）。
+- **Python 3.12**（严格要求，与 `setup.ps1`/`setup.bat` 一致）。
 - 建议虚拟环境：
 
 ```bash

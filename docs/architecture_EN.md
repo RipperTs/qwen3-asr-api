@@ -55,8 +55,8 @@ asr-service/
 ├── logs/                          # Log files
 ├── scripts/                       # Dev/research scripts
 │   └── e2e/                       # Compat-API end-to-end smoke (isolated venv, one-shot run.sh)
-├── setup.sh / setup.bat           # Environment initialization
-├── start.sh / start.bat           # Service startup
+├── setup.sh / setup.ps1           # Environment initialization
+├── start.sh / start.ps1           # Service startup
 ├── config.example.yaml            # Config template (auto-copied to config.yaml on first run)
 └── requirements.txt               # Dependencies
 

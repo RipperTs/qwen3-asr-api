@@ -98,15 +98,17 @@ Windows 可使用 Python Embeddable Package 实现独立便携部署：
 
 1. 下载 [Python 3.12 Embeddable Package](https://www.python.org/downloads/windows/) 放入 `bin/` 目录
 2. 下载 [ffmpeg](https://www.gyan.dev/ffmpeg/builds/) 并将 `ffmpeg.exe` 放入 `bin/` 目录
-3. 运行初始化脚本：
-   ```cmd
+3. 运行初始化脚本（PowerShell）：
+   ```powershell
    cd asr-service
-   setup.bat
+   .\setup.ps1
    ```
 4. 启动服务：
-   ```cmd
-   start.bat --device cuda --model-size 0.6b --host 0.0.0.0
+   ```powershell
+   .\start.ps1 --device cuda --model-size 0.6b --host 0.0.0.0
    ```
+
+> 💡 推荐使用 PowerShell 脚本（`.ps1`）。同名的 `.bat`（`setup.bat` / `start.bat`）仅作旧版 cmd 兼容保留，新环境下不保证可正常运行；如遇问题请改用 `.ps1`。首次运行若提示执行策略限制，可用 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`。
 
 ## 启用 API 认证
 

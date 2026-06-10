@@ -55,8 +55,8 @@ asr-service/
 ├── logs/                          # 日志文件
 ├── scripts/                       # 开发/调研脚本
 │   └── e2e/                       # 兼容接口端到端冒烟（独立 venv 一键 run.sh）
-├── setup.sh / setup.bat           # 环境初始化
-├── start.sh / start.bat           # 服务启动
+├── setup.sh / setup.ps1           # 环境初始化
+├── start.sh / start.ps1           # 服务启动
 ├── config.example.yaml            # 配置模板（首启自动拷贝为 config.yaml）
 └── requirements.txt               # 依赖清单
 
