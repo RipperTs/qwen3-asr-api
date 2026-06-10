@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 
 from app.utils.logger import setup_logger
-from app.utils.arg_schema import build_parser, ARG_SPECS
+from app.utils.arg_schema import build_parser, ARG_SPECS, resolve_help_lang
 from app.utils.config_file import merge_runtime_config
 import app.config as cfg
 from app.runtime.device import detect_device, resolve_device, auto_select_model_size, should_disable_align
@@ -29,8 +29,10 @@ def parse_args(argv=None):
 
     参数定义见 app/utils/arg_schema.py（单一 schema，argparse 全 SUPPRESS）；
     配置文件的发现/引导生成/校验/合并见 app/utils/config_file.py。
+    --help 文案语言先于建 parser 判定（跟随 shell $LANG，--lang 可覆盖），见 resolve_help_lang。
     """
-    cli_ns = build_parser().parse_args(argv)
+    lang = resolve_help_lang(argv)
+    cli_ns = build_parser(lang).parse_args(argv)
     return merge_runtime_config(cli_ns)
 
 

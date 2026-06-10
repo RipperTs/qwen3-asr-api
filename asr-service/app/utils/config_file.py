@@ -217,6 +217,7 @@ def merge_runtime_config(cli_ns: argparse.Namespace) -> argparse.Namespace:
     no_config = cli.pop("no_config", False)
     config_arg = cli.pop("config", None)
     update_config = cli.pop("update_config", False)
+    cli.pop("help_lang", None)  # --lang 仅决定 --help 文案语言，非运行配置，剔除
 
     merged = schema_defaults()
 
