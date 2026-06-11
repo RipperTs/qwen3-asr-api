@@ -17,6 +17,7 @@ For contributors: dev environment, testing, end-to-end smoke, key code conventio
   - [5.4 Realtime WebSocket](#54-realtime-websocket)
 - [6. Running the service locally](#6-running-the-service-locally)
 - [7. Commit conventions](#7-commit-conventions)
+- [8. Release & image build](#8-release--image-build)
 
 ---
 
@@ -134,3 +135,23 @@ venv/bin/python -m app.main --web --enable-stream \
 - Branch off the default branch for feature work; use Conventional Commits prefixes (`feat`/`fix`/`test`/`docs`…), Chinese body.
 - Run `git add` and `git commit` **separately** (avoid index.lock).
 - Run relevant unit tests before committing; when changing a public contract, update `docs/api/` docs and the doc-center registration.
+
+## 8. Release & image build
+
+Image publishing is automated via GitHub Actions: pushing a `vX.Y.Z` git tag triggers `.github/workflows/docker-publish.yml`, which builds and pushes three variants to Docker Hub in parallel.
+
+```bash
+git tag v2.0.1
+git push origin v2.0.1
+# → lancelrq/qwen3-asr-service:2.0.1 / 2.0.1-cpu / 2.0.1-arm64 + matching latest tags
+```
+
+| Variant | Dockerfile | Platform | Tags produced |
+|---------|-----------|----------|---------------|
+| GPU | `docker/Dockerfile` | linux/amd64 | `X.Y.Z` + `latest` |
+| CPU | `docker/Dockerfile.cpu` | linux/amd64 | `X.Y.Z-cpu` + `latest-cpu` |
+| ARM64 | `docker/Dockerfile.cpu` | linux/arm64 (QEMU) | `X.Y.Z-arm64` + `latest-arm64` |
+
+- **Version injection**: the tag's version (with the `v` prefix stripped) is passed via `--build-arg APP_VERSION` into the image; `main.py` reads it through `os.environ.get("APP_VERSION")`, surfacing as `info.version` in FastAPI `/openapi.json`. Falls back to `dev` (local manual build) / `2.0.0` (running source directly) when unset.
+- **First-release prerequisite**: configure `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub Access Token with Read & Write) under repo **Settings → Secrets and variables → Actions**, otherwise the login step fails.
+- **Local manual build**: `bash docker/build.sh` still builds a single variant interactively (now also injects `APP_VERSION`); CI has no GPU, so runtime verification of the GPU image requires a local machine with a card.

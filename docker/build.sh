@@ -29,21 +29,28 @@ read -rp "请输入版本号（回车默认 latest）: " input_ver
 VER="${input_ver:-latest}"
 TAG="${VER}${SUFFIX}"
 
+# 注入镜像内版本号（FastAPI version / OpenAPI）；latest 不是有效语义版本，回退 dev
+if [ "$VER" = "latest" ]; then
+    APP_VER="dev"
+else
+    APP_VER="$VER"
+fi
+
 # 构建
 echo ""
 case "$VARIANT" in
     cpu)
         echo "Building ${IMAGE_NAME}:${TAG} (CPU, amd64) ..."
-        docker build -f docker/Dockerfile.cpu -t "${IMAGE_NAME}:${TAG}" .
+        docker build -f docker/Dockerfile.cpu --build-arg APP_VERSION="${APP_VER}" -t "${IMAGE_NAME}:${TAG}" .
         ;;
     arm64)
         echo "Building ${IMAGE_NAME}:${TAG} (CPU, arm64) ..."
         docker buildx build --platform linux/arm64 \
-            -f docker/Dockerfile.cpu -t "${IMAGE_NAME}:${TAG}" --load .
+            -f docker/Dockerfile.cpu --build-arg APP_VERSION="${APP_VER}" -t "${IMAGE_NAME}:${TAG}" --load .
         ;;
     *)
         echo "Building ${IMAGE_NAME}:${TAG} (GPU) ..."
-        docker build -f docker/Dockerfile -t "${IMAGE_NAME}:${TAG}" .
+        docker build -f docker/Dockerfile --build-arg APP_VERSION="${APP_VER}" -t "${IMAGE_NAME}:${TAG}" .
         ;;
 esac
 

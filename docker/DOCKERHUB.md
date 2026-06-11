@@ -20,11 +20,11 @@ A simple, fast and efficient speech recognition API service based on Qwen3-ASR. 
 
 ### Image tag comparison
 
-| Tag | Base Image | Arch | Inference Engine | NVIDIA GPU | Image Size |
+| Tag | Base Image | Arch | Inference Engine | NVIDIA GPU | Image Size (compressed / on-disk) |
 |-----|-----------|------|-----------------|-----------|-----------|
-| `latest` / `2.0` | `nvidia/cuda:12.1.1-runtime-ubuntu22.04` | amd64 | PyTorch (CUDA) | Required | ~8-10GB |
-| `latest-cpu` / `2.0-cpu` | `ubuntu:22.04` | amd64 | OpenVINO (INT8) | Not required | ~3-4GB |
-| `latest-arm64` / `2.0-arm64` | `ubuntu:22.04` | arm64 | OpenVINO (FP32) | Not required | ~3-4GB |
+| `latest` / `2.0` | `nvidia/cuda:12.1.1-runtime-ubuntu22.04` | amd64 | PyTorch (CUDA) | Required | ~4.9GB / ~8-10GB |
+| `latest-cpu` / `2.0-cpu` | `ubuntu:22.04` | amd64 | OpenVINO (INT8) | Not required | ~2GB / ~3-4GB |
+| `latest-arm64` / `2.0-arm64` | `ubuntu:22.04` | arm64 | OpenVINO (FP32) | Not required | ~2GB / ~3-4GB |
 
 ### Features
 
@@ -219,11 +219,11 @@ If you find this project helpful, please consider giving a ⭐ on [GitHub](https
 
 ### 镜像版本对比
 
-| Tag | 基础镜像 | 架构 | 推理引擎 | NVIDIA GPU | 镜像体积 |
+| Tag | 基础镜像 | 架构 | 推理引擎 | NVIDIA GPU | 镜像体积（压缩 / 解压） |
 |-----|---------|------|---------|-----------|---------|
-| `latest` / `2.0` | `nvidia/cuda:12.1.1-runtime-ubuntu22.04` | amd64 | PyTorch (CUDA) | 需要 | ~8-10GB |
-| `latest-cpu` / `2.0-cpu` | `ubuntu:22.04` | amd64 | OpenVINO (INT8) | 不需要 | ~3-4GB |
-| `latest-arm64` / `2.0-arm64` | `ubuntu:22.04` | arm64 | OpenVINO (FP32) | 不需要 | ~3-4GB |
+| `latest` / `2.0` | `nvidia/cuda:12.1.1-runtime-ubuntu22.04` | amd64 | PyTorch (CUDA) | 需要 | ~4.9GB / ~8-10GB |
+| `latest-cpu` / `2.0-cpu` | `ubuntu:22.04` | amd64 | OpenVINO (INT8) | 不需要 | ~2GB / ~3-4GB |
+| `latest-arm64` / `2.0-arm64` | `ubuntu:22.04` | arm64 | OpenVINO (FP32) | 不需要 | ~2GB / ~3-4GB |
 
 ### 特性
 

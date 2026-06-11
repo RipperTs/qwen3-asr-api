@@ -30,6 +30,10 @@ COPY asr-service/requirements-cpu.txt /app/requirements.txt
 RUN pip install --no-cache-dir --ignore-installed -r requirements.txt \
         --extra-index-url https://download.pytorch.org/whl/cpu
 
+# 镜像版本号（CI 按 git tag 注入，本地构建默认 dev）；置于依赖安装后，避免版本变更使 pip 层缓存失效
+ARG APP_VERSION=dev
+ENV APP_VERSION=$APP_VERSION
+
 # 复制应用代码
 COPY asr-service/ /app
 
