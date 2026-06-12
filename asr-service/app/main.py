@@ -144,6 +144,8 @@ def _apply_cli_config(args):
         cfg.VLLM_END_SILENCE_MS = args.vllm_end_silence_ms
     if getattr(args, "vllm_enable_align", None) is not None:
         cfg.VLLM_ENABLE_ALIGN = args.vllm_enable_align
+    if getattr(args, "vllm_align_device", None) is not None:
+        cfg.VLLM_ALIGN_DEVICE = args.vllm_align_device
     if getattr(args, "vllm_segment_gap_ms", None) is not None:
         cfg.VLLM_SEGMENT_GAP_MS = args.vllm_segment_gap_ms
     cfg.ENABLE_SPEAKER = getattr(args, "enable_speaker", False)
@@ -577,6 +579,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         unfixed_chunk_num=cfg.VLLM_UNFIXED_CHUNK_NUM,
         unfixed_token_num=cfg.VLLM_UNFIXED_TOKEN_NUM,
         enable_align=cfg.VLLM_ENABLE_ALIGN,
+        align_device=cfg.VLLM_ALIGN_DEVICE,
     )
     try:
         engine.load()

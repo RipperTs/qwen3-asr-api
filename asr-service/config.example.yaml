@@ -39,6 +39,7 @@ enable_stream: true         # WS /v2/asr/stream（standard 模式）
 # vllm_concurrency: 1           # 同时解码会话数（generate 串行，>1 无吞吐收益）
 # vllm_end_silence_ms: 800      # 能量端点尾静音判停（毫秒）
 # vllm_enable_align: true       # 离线 /v2/asr 词级时间戳：加载对齐模型（false 省显存、无 words）
+# vllm_align_device: cuda       # 对齐器设备；cuda 快但显存在 gpu_memory_utilization 预算外，OOM 时改 cpu（float32，慢但无 GPU 争用）
 # vllm_segment_gap_ms: 500      # 离线分段：相邻词间隙 > 此值断句（无 FSMN，以词间隙替代）
 
 # ── 离线任务持久化 ──

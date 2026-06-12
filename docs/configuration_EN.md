@@ -111,6 +111,7 @@ Effective only in vllm mode; requires a CUDA GPU and an isolated environment/ima
 | `--vllm-concurrency` | number | `1` | Concurrent decoding sessions (generate is serial; >1 yields no throughput) |
 | `--vllm-end-silence-ms` | ms | `800` | Energy endpointer end-silence threshold |
 | `--vllm-enable-align` / `--no-vllm-align` | - | on | Offline `/v2/asr` word timestamps: load the aligner (off saves VRAM, no words) |
+| `--vllm-align-device` | `cuda` / `cpu` | `cuda` | Aligner device; its VRAM is **outside the `gpu_memory_utilization` budget** — switch to `cpu` (float32, slower, no GPU contention) if the aligner OOMs for lack of GPU headroom |
 | `--vllm-segment-gap-ms` | ms | `500` | Offline segmentation: split when the inter-word gap exceeds this (no FSMN; word-gap proxy) |
 
 ### Config-file Meta Parameters
@@ -238,7 +239,7 @@ api_key: "sk-your-key"
 **Offline transcription (`/v2/asr`)**: vllm mode reuses the **exact same async task contract** as standard (`POST /v2/asr` → `task_id` → poll `GET /v2/tasks/{id}`, persistence, cancel), with ASR via vLLM batched `transcribe`. All differences from standard are **quality differences that do not break the result structure**, and are flagged in `result.warnings`:
 - **Segmentation**: punctuation-first splitting on model-native sentence punctuation (`。！？；`, with comma sub-split for sentences exceeding `--max-segment`); word timestamps only locate start/end. Falls back to inter-word gap (`--vllm-segment-gap-ms`, default 500ms) / a single whole-text segment when the aligner is off. Boundary precision is lower than FSMN-VAD.
 - **Punctuation**: produced natively by Qwen3-ASR (already punctuated); cannot be turned off — `with_punc=false` is recorded in `warnings`.
-- **Word timestamps**: `--vllm-enable-align` (on by default) via ForcedAligner, same as standard; `--no-vllm-align` disables it to save VRAM.
+- **Word timestamps**: `--vllm-enable-align` (on by default) via ForcedAligner, same as standard; `--no-vllm-align` disables it to save VRAM. ⚠️ The aligner is a standalone transformers model in the main process and its VRAM is **not counted in `gpu_memory_utilization`** (which only bounds the vLLM EngineCore subprocess) — setting `gpu_memory_utilization` too high (e.g. 0.85+ on a 24G card) leaves the main process no headroom and the alignment forward pass hits `CUDA out of memory`. Remedies: ① lower `--gpu-memory-utilization` (≤0.6 on a 24G card with align on, to keep ~4GB+ free); ② `--vllm-align-device cpu` to run the aligner on CPU (no GPU contention, slower); ③ `--no-vllm-align` to drop word timestamps.
 - **Speaker diarization/ID**: with `--enable-speaker` (plus `--enable-speaker-db` for the voiceprint DB), offline `segments[].speaker` / `speaker_name` / `speakers` match standard; the engine is CAM++ (CPU, torch, not funasr), and **windowing uses an energy VAD instead of FSMN-VAD** (coarser boundaries). When disabled, `diarize`/`identify_speakers` are recorded in `warnings`. Requires extra deps `scipy`/`scikit-learn`/`modelscope` (or a pre-mounted CAM++ model dir); see [requirements-vllm.txt](../asr-service/requirements-vllm.txt). Realtime streaming still has no speaker labels.
 > For high-fidelity with FSMN segmentation / CT-Transformer punctuation / realtime speakers, use `standard` mode.
 

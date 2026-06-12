@@ -34,7 +34,8 @@ class VLLMASREngine:
 
     def __init__(self, model_size="0.6b", *, gpu_memory_utilization=0.8,
                  max_model_len=None, chunk_size_sec=1.0,
-                 unfixed_chunk_num=2, unfixed_token_num=5, enable_align=True):
+                 unfixed_chunk_num=2, unfixed_token_num=5, enable_align=True,
+                 align_device="cuda"):
         self._model_size = model_size
         self._gpu_mem = gpu_memory_utilization
         self._max_model_len = max_model_len
@@ -44,6 +45,9 @@ class VLLMASREngine:
         # 离线词级时间戳用：加载 ForcedAligner（与流式无关，仅 transcribe 用）。
         # 加载失败时降级为 False（仍可出文本，只是无 words）。
         self._enable_align = enable_align
+        # 对齐器设备：cuda（默认，快，但显存在 vLLM 的 gpu_memory_utilization 预算之外，
+        # util 过高时主进程无余量→OOM）/ cpu（无 GPU 争用，float32，慢但稳）。
+        self._align_device = str(align_device or "cuda").lower()
         self._model = None
         # vllm.LLM.generate 非并发安全：与路线 B 同思路，用锁串行化（见 §3 并发）
         self._infer_lock = threading.Lock()
@@ -67,17 +71,22 @@ class VLLMASREngine:
             llm_kwargs["max_model_len"] = self._max_model_len
 
         # 可选 ForcedAligner（离线 transcribe 出词级时间戳用）：在主进程加载一份
-        # transformers 对齐模型（与 vLLM EngineCore 子进程相互独立，各占一份显存）。
+        # transformers 对齐模型，**显存在 vLLM EngineCore 的 gpu_memory_utilization 预算之外**
+        # ——cuda 时须留 GPU 余量（util 过高→对齐前向 OOM），cpu 时彻底无 GPU 争用（float32）。
         # 下载/加载失败则降级为无对齐（仍可出文本）。aligner 仓库 HF 与 modelscope 都有。
         if self._enable_align:
             import torch
             try:
                 aligner_local = MODEL_LOCAL_MAP["aligner"]
                 ensure_model(MODEL_REPO_MAP[source]["aligner"], aligner_local)
+                on_cpu = self._align_device.startswith("cpu")
                 llm_kwargs["forced_aligner"] = aligner_local
                 llm_kwargs["forced_aligner_kwargs"] = dict(
-                    dtype=torch.bfloat16, device_map="cuda")
-                logger.info(f"对齐模型将加载: {aligner_local}")
+                    # CPU 上 bf16 多数算子慢/不支持 → float32；GPU 与主模型一致 bf16
+                    dtype=torch.float32 if on_cpu else torch.bfloat16,
+                    device_map="cpu" if on_cpu else "cuda")
+                logger.info(f"对齐模型将加载: {aligner_local} "
+                            f"(device={'cpu' if on_cpu else 'cuda'})")
             except Exception as e:
                 logger.warning(f"对齐模型准备失败，离线降级为无词级时间戳: {e}")
                 self._enable_align = False
@@ -85,7 +94,8 @@ class VLLMASREngine:
         self._model = Qwen3ASRModel.LLM(model=local_dir, **llm_kwargs)
         logger.info(f"vLLM ASR 引擎已加载: size={self._model_size} "
                     f"gpu_mem={self._gpu_mem} max_model_len={self._max_model_len or '默认'} "
-                    f"chunk={self._chunk_size_sec}s align={self._enable_align}")
+                    f"chunk={self._chunk_size_sec}s align={self._enable_align}"
+                    f"{f'@{self._align_device}' if self._enable_align else ''}")
 
     # ── 三段式流式（同步；调用方在线程池内执行，避免阻塞事件循环）──
     def new_state(self, language=None, chunk_size_sec=None):

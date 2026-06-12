@@ -220,6 +220,14 @@ ARG_SPECS = (
         negative_help_en="vLLM offline: do not load the aligner (save VRAM, no word timestamps)",
     ),
     ArgSpec(
+        key="vllm_align_device", flags=("--vllm-align-device",),
+        default=None, choices=("cuda", "cpu"), group="vLLM",
+        help=f"对齐器加载设备；cuda 快但显存在 gpu_memory_utilization 预算外，OOM 时改 cpu "
+             f"(default: {cfg.VLLM_ALIGN_DEVICE})",
+        help_en=f"Aligner device; cuda is fast but its VRAM is outside gpu_memory_utilization, "
+                f"switch to cpu on OOM (default: {cfg.VLLM_ALIGN_DEVICE})",
+    ),
+    ArgSpec(
         key="vllm_segment_gap_ms", flags=("--vllm-segment-gap-ms",),
         default=None, type=int, group="vLLM",
         help=f"vLLM 离线分段词间隙阈值（ms），相邻词间隙超此断句 (default: {cfg.VLLM_SEGMENT_GAP_MS})",

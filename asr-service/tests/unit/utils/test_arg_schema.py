@@ -65,6 +65,7 @@ LEGACY_DEFAULTS = {
     "vllm_concurrency": None,
     "vllm_end_silence_ms": None,
     "vllm_enable_align": None,
+    "vllm_align_device": None,
     "vllm_segment_gap_ms": None,
 }
 

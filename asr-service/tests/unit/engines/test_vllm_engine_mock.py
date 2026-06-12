@@ -78,3 +78,10 @@ def test_is_loaded():
     assert eng.is_loaded is False
     eng._model = _MockModel()
     assert eng.is_loaded is True
+
+
+def test_align_device_normalized():
+    """对齐器设备规范化为小写；缺省/None → cuda（OOM 时可经 --vllm-align-device cpu 移出 GPU）。"""
+    assert VLLMASREngine()._align_device == "cuda"
+    assert VLLMASREngine(align_device="CPU")._align_device == "cpu"
+    assert VLLMASREngine(align_device=None)._align_device == "cuda"

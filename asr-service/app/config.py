@@ -174,4 +174,5 @@ VLLM_MAX_UTTERANCE_SEC = 20         # 单句兜底切分（秒）：约束上下
 VLLM_ENERGY_FLOOR_DBFS = -45.0      # 能量端点门限（dBFS）：高于此判为语音/句开始
 VLLM_END_SILENCE_MS = 800           # 能量端点尾静音判停（ms）
 VLLM_ENABLE_ALIGN = True            # 离线词级时间戳：加载 ForcedAligner（HF 拉取 ~0.6B；--no-vllm-align 可关省显存）
+VLLM_ALIGN_DEVICE = "cuda"          # 对齐器加载设备：cuda 快但显存在 gpu_memory_utilization 预算外，OOM 时改 cpu（float32，无 GPU 争用）
 VLLM_SEGMENT_GAP_MS = 500           # 离线分段：相邻词间隙 > 此值断句（无 FSMN-VAD，以词间隙替代）

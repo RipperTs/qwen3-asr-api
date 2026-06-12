@@ -178,6 +178,8 @@ bash docker/build.sh   # choose "4) vLLM"
 > The vLLM engine holds the GPU in a separate EngineCore subprocess and the service runs a single worker (PID 1 reaps the subprocess in the container). It loads HF full-precision `models/asr/0.6b`/`1.7b` (shares the `models/` mount with standard).
 >
 > **Models for offline word timestamps / speakers**: `--vllm-enable-align` (on by default) needs the aligner `models/asr/aligner` (Qwen3-ForcedAligner, pulled from HF); `--enable-speaker` needs the voiceprint model `models/speaker/campplus` (CAM++, ModelScope-only) — `requirements-vllm.txt` bundles `modelscope` as a download fallback, but pre-mounting this directory is recommended in production to avoid runtime network access. Speaker clustering depends on `scipy`/`scikit-learn` (also bundled).
+>
+> ⚠️ **Aligner OOM**: the ForcedAligner loads in the main process and its VRAM is **not counted in `--gpu-memory-utilization`** (which only bounds the vLLM EngineCore subprocess). Too high a util (e.g. 0.85+ on a 24G card) leaves the main process no headroom and the alignment forward pass raises `CUDA out of memory`. Remedies: lower `--gpu-memory-utilization` (≤0.6 on a 24G card with align on) / `--vllm-align-device cpu` (run the aligner on CPU, no GPU contention, slower) / `--no-vllm-align` (drop word timestamps). See the [configuration guide](configuration_EN.md).
 
 #### vLLM Startup Logs (expected, not failures)
 

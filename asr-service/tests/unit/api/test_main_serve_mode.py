@@ -272,6 +272,7 @@ def test_config_vllm_defaults():
     assert cfg.VLLM_ENERGY_FLOOR_DBFS == -45.0
     assert cfg.VLLM_END_SILENCE_MS == 800
     assert cfg.VLLM_ENABLE_ALIGN is True            # 离线词级时间戳默认开
+    assert cfg.VLLM_ALIGN_DEVICE == "cuda"          # 对齐器默认 GPU（OOM 时可改 cpu）
     assert cfg.VLLM_SEGMENT_GAP_MS == 500           # 离线分段词间隙阈值
 
 
@@ -297,6 +298,25 @@ def test_parse_and_apply_vllm_args(monkeypatch):
         assert cfg.VLLM_MAX_UTTERANCE_SEC == 30
         assert cfg.VLLM_CONCURRENCY == 2
         assert cfg.VLLM_END_SILENCE_MS == 600
+    finally:
+        for k, v in saved.items():
+            setattr(cfg, k, v)
+
+
+def test_parse_and_apply_vllm_align_device(monkeypatch):
+    """--vllm-align-device cpu 解析并写入 cfg（OOM 逃生：对齐器移出 GPU）。"""
+    import app.config as cfg
+    from app.main import _apply_cli_config, parse_args
+    monkeypatch.setattr("sys.argv", [
+        "prog", "--no-config", "--serve-mode", "vllm", "--vllm-align-device", "cpu"])
+    saved = {k: getattr(cfg, k) for k in (
+        "VLLM_ALIGN_DEVICE", "MODEL_SOURCE", "MAX_SEGMENT_DURATION",
+        "SERVE_MODE", "ENABLE_STREAM")}
+    try:
+        ns = parse_args()
+        assert ns.vllm_align_device == "cpu"
+        _apply_cli_config(ns)
+        assert cfg.VLLM_ALIGN_DEVICE == "cpu"
     finally:
         for k, v in saved.items():
             setattr(cfg, k, v)

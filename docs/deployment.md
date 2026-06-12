@@ -178,6 +178,8 @@ bash docker/build.sh   # 选择 "4) vLLM"
 > vLLM 引擎在独立 EngineCore 子进程持有 GPU，服务固定单 worker（容器内 PID 1 收割子进程）。模型用 HF 全精度 `models/asr/0.6b`/`1.7b`（与 standard 共用 `models/` 挂载）。
 >
 > **离线词级时间戳 / 说话人所需模型**：`--vllm-enable-align`（默认开）需对齐器 `models/asr/aligner`（Qwen3-ForcedAligner，HF 直拉）；`--enable-speaker` 需声纹模型 `models/speaker/campplus`（CAM++，仅 ModelScope 提供）——`requirements-vllm.txt` 已含 `modelscope` 兜底自动下载，生产建议预挂该目录以免运行时联网。说话人聚类依赖 `scipy`/`scikit-learn`（同已含）。
+>
+> ⚠️ **对齐器 OOM**：ForcedAligner 在主进程加载，显存**不计入 `--gpu-memory-utilization`**（该参数只约束 vLLM EngineCore 子进程）。若 util 调得过高（如 24G 卡 0.85+）主进程将无余量，对齐前向报 `CUDA out of memory`。对策：降 `--gpu-memory-utilization`（24G 卡开对齐建议 ≤0.6）／ `--vllm-align-device cpu`（对齐器移 CPU，无 GPU 争用，较慢）／ `--no-vllm-align`（放弃词级时间戳）。详见[配置文档](configuration.md#vllm-原生流式模式路线-a)。
 
 #### vLLM 启动日志说明（常见现象，非故障）
 
