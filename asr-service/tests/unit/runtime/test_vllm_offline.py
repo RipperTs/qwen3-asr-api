@@ -185,7 +185,7 @@ class _SpeakerEngine:
 
 
 class _EnergyVAD:
-    def detect(self, wav_path):
+    def detect_array(self, wav, sr):
         return [(0, 5000)]
 
 

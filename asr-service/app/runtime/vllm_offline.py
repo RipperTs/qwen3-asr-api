@@ -172,8 +172,12 @@ def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path,
     speakers = None
     diar = None
     try:
+        # wav 读一次：VAD 区间与声纹滑窗共用同一数组（阶段 0 已保证 16k 单声道）
+        wav, sr = sf.read(wav_path, dtype="float32")
+        if wav.ndim > 1:                                  # 兜底：多声道取均值
+            wav = wav.mean(axis=1)
         # 语音区间：离线能量 VAD（无 funasr）；缺省/无段时退化为整段
-        vad_segments = energy_vad.detect(wav_path) if energy_vad is not None else []
+        vad_segments = energy_vad.detect_array(wav, sr) if energy_vad is not None else []
         if not vad_segments:
             vad_segments = [(0, int(duration * 1000))]
         windows = []
@@ -184,7 +188,6 @@ def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path,
         if len(windows) > cfg.SPEAKER_MAX_WINDOWS:        # 抽稀防谱聚类 N² 亲和阵内存
             k = -(-len(windows) // cfg.SPEAKER_MAX_WINDOWS)
             windows = windows[::k]
-        wav, _sr = sf.read(wav_path, dtype="float32")     # 阶段 0 已保证 16k 单声道
         embeddings = speaker_engine.embed_windows(wav, windows)
         labels = cluster_offline(embeddings, max_speakers=cfg.SPEAKER_MAX)
         diar = DiarizationResult(windows, labels, embeddings)
