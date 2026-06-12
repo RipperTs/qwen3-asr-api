@@ -228,6 +228,14 @@ ARG_SPECS = (
                 f"switch to cpu on OOM (default: {cfg.VLLM_ALIGN_DEVICE})",
     ),
     ArgSpec(
+        key="vllm_infer_batch_size", flags=("--vllm-infer-batch-size",),
+        default=None, type=int, group="vLLM",
+        help=f"一次对齐/ASR 的音频块数（块≤180s）；-1=全部一次（长音频对齐易 OOM），"
+             f"小值省显存 (default: {cfg.VLLM_INFER_BATCH_SIZE})",
+        help_en=f"Audio chunks per alignment/ASR batch (chunks ≤180s); -1=all at once "
+                f"(long audio aligner OOM), smaller saves VRAM (default: {cfg.VLLM_INFER_BATCH_SIZE})",
+    ),
+    ArgSpec(
         key="vllm_segment_gap_ms", flags=("--vllm-segment-gap-ms",),
         default=None, type=int, group="vLLM",
         help=f"vLLM 离线分段词间隙阈值（ms），相邻词间隙超此断句 (default: {cfg.VLLM_SEGMENT_GAP_MS})",

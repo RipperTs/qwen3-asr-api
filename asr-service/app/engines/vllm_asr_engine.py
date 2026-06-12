@@ -35,7 +35,7 @@ class VLLMASREngine:
     def __init__(self, model_size="0.6b", *, gpu_memory_utilization=0.8,
                  max_model_len=None, chunk_size_sec=1.0,
                  unfixed_chunk_num=2, unfixed_token_num=5, enable_align=True,
-                 align_device="cuda"):
+                 align_device="cuda", infer_batch_size=4):
         self._model_size = model_size
         self._gpu_mem = gpu_memory_utilization
         self._max_model_len = max_model_len
@@ -46,8 +46,12 @@ class VLLMASREngine:
         # 加载失败时降级为 False（仍可出文本，只是无 words）。
         self._enable_align = enable_align
         # 对齐器设备：cuda（默认，快，但显存在 vLLM 的 gpu_memory_utilization 预算之外，
-        # util 过高时主进程无余量→OOM）/ cpu（无 GPU 争用，float32，慢但稳）。
+        # 长音频对齐前向激活大、余量不足时 OOM）/ cpu（无 GPU 争用，float32，慢但稳）。
         self._align_device = str(align_device or "cuda").lower()
+        # 离线一次对齐/ASR 的音频块数上限（qwen_asr max_inference_batch_size）：transcribe
+        # 内部按 ≤180s 切块，默认 -1 会把全部块一次性喂对齐器前向 → 长音频激活叠加 OOM。
+        # 取有界小值=逐批对齐、峰值显存随批大小线性下降（块数为 1 的短音频无差异）。
+        self._infer_batch_size = int(infer_batch_size)
         self._model = None
         # vllm.LLM.generate 非并发安全：与路线 B 同思路，用锁串行化（见 §3 并发）
         self._infer_lock = threading.Lock()
@@ -66,7 +70,8 @@ class VLLMASREngine:
         source = MODEL_SOURCE if MODEL_SOURCE in MODEL_REPO_MAP else "modelscope"
         ensure_model(MODEL_REPO_MAP[source][model_key], local_dir)
 
-        llm_kwargs = dict(gpu_memory_utilization=self._gpu_mem)
+        llm_kwargs = dict(gpu_memory_utilization=self._gpu_mem,
+                          max_inference_batch_size=self._infer_batch_size)
         if self._max_model_len:
             llm_kwargs["max_model_len"] = self._max_model_len
 
@@ -95,7 +100,8 @@ class VLLMASREngine:
         logger.info(f"vLLM ASR 引擎已加载: size={self._model_size} "
                     f"gpu_mem={self._gpu_mem} max_model_len={self._max_model_len or '默认'} "
                     f"chunk={self._chunk_size_sec}s align={self._enable_align}"
-                    f"{f'@{self._align_device}' if self._enable_align else ''}")
+                    f"{f'@{self._align_device}' if self._enable_align else ''} "
+                    f"infer_batch={self._infer_batch_size}")
 
     # ── 三段式流式（同步；调用方在线程池内执行，避免阻塞事件循环）──
     def new_state(self, language=None, chunk_size_sec=None):

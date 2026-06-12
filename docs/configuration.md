@@ -111,7 +111,8 @@
 | `--vllm-concurrency` | 数字 | `1` | 同时解码会话数（generate 串行，>1 无吞吐收益） |
 | `--vllm-end-silence-ms` | 毫秒 | `800` | 能量端点尾静音判停阈值 |
 | `--vllm-enable-align` / `--no-vllm-align` | - | 开启 | 离线 `/v2/asr` 词级时间戳：加载对齐模型（关闭省显存、无 words） |
-| `--vllm-align-device` | `cuda` / `cpu` | `cuda` | 对齐器加载设备；其显存**在 `gpu_memory_utilization` 预算之外**，GPU 余量不足致对齐 OOM 时改 `cpu`（float32，慢但无 GPU 争用） |
+| `--vllm-align-device` | `cuda` / `cpu` | `cuda` | 对齐器加载设备；其显存**在 `gpu_memory_utilization` 预算之外**，长音频对齐 OOM 时改 `cpu`（float32，慢但无 GPU 争用） |
+| `--vllm-infer-batch-size` | 数字 | `4` | 一次对齐/ASR 的音频块数（块 ≤180s）；`-1`=全部一次（长音频对齐前向激活叠加易 OOM），调小省显存、长音频仍 OOM 可降到 `1` |
 | `--vllm-segment-gap-ms` | 毫秒 | `500` | 离线分段：相邻词间隙 > 此值断句（无 FSMN，以词间隙替代） |
 
 ### 配置文件元参数
@@ -239,7 +240,8 @@ api_key: "sk-your-key"
 **离线转写（`/v2/asr`）**：vllm 模式离线复用与 standard **完全一致的异步任务契约**（`POST /v2/asr` 返回 `task_id` → 轮询 `GET /v2/tasks/{id}`、持久化、取消），ASR 走 vLLM 批量 `transcribe`。与 standard 的差异均为**质量差异、不破坏 result 结构**，并以 `result.warnings` 标注：
 - **分段**：模型原生标点优先断句（句末 `。！？；` 切句，超 `--max-segment` 的长句在逗号处细切），词级时间戳仅用于定位 start/end；无对齐器时退化为词间隙（`--vllm-segment-gap-ms`，默认 500ms）/ 整文单段。边界精度低于 FSMN-VAD。
 - **标点**：Qwen3-ASR 模型原生输出（已含标点），无法单独关闭；请求 `with_punc=false` 仅记入 `warnings`。
-- **词级时间戳**：`--vllm-enable-align`（默认开）经 ForcedAligner 产出，与 standard 同款；`--no-vllm-align` 可关以省显存。⚠️ 对齐器是主进程内的独立 transformers 模型，其显存**不计入 `gpu_memory_utilization`**（该参数只约束 vLLM EngineCore 子进程）——若 `gpu_memory_utilization` 调得过高（如 24G 卡用 0.85+），主进程将无余量、对齐前向 `CUDA out of memory`。对策：① 降 `--gpu-memory-utilization`（24G 卡开对齐建议 ≤0.6，留 ~4GB+ 余量）；② `--vllm-align-device cpu` 把对齐器移到 CPU（无 GPU 争用，慢）；③ `--no-vllm-align` 放弃词级时间戳。
+- **词级时间戳**：`--vllm-enable-align`（默认开）经 ForcedAligner 产出，与 standard 同款；`--no-vllm-align` 可关以省显存。
+  - ⚠️ **长音频对齐 OOM**：对齐器是主进程内的独立 transformers 模型，其显存**不计入 `gpu_memory_utilization`**（该参数只约束 vLLM EngineCore 子进程）。`transcribe` 内部按 ≤180s 切块，但默认（`max_inference_batch_size=-1`）会把一个文件的**全部块一次性**喂对齐器前向——长音频（如 30 分钟≈10 块）激活叠加即 `CUDA out of memory`（短音频只 1 块、不受影响）。对策（按推荐序）：① **`--vllm-infer-batch-size`**（默认已改为 `4`）逐批对齐，峰值显存随批大小线性下降，仍在 GPU、最快；长音频仍 OOM 则降到 `1`；② `--vllm-align-device cpu` 把对齐器移到 CPU（无 GPU 争用，稳但慢）；③ 降 `--gpu-memory-utilization` 留更多 GPU 余量；④ `--no-vllm-align` 放弃词级时间戳。
 - **说话人分离/识别**：`--enable-speaker`（+ 声纹库 `--enable-speaker-db`）后离线 `segments[].speaker` / `speaker_name` / `speakers` 字段与 standard 一致；引擎为 CAM++（CPU、torch，非 funasr），**滑窗语音区间用能量 VAD 替代 FSMN-VAD**（边界较粗）。未开启时请求 `diarize`/`identify_speakers` 记入 `warnings`。需额外依赖 `scipy`/`scikit-learn`/`modelscope`（或预挂 CAM++ 模型目录），见 [requirements-vllm.txt](../asr-service/requirements-vllm.txt)。实时流式仍无说话人。
 > 需要 FSMN 精分段 / CT-Transformer 标点 / 实时说话人的高保真，请用 `standard` 模式。
 

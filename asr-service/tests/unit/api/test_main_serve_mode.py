@@ -272,7 +272,8 @@ def test_config_vllm_defaults():
     assert cfg.VLLM_ENERGY_FLOOR_DBFS == -45.0
     assert cfg.VLLM_END_SILENCE_MS == 800
     assert cfg.VLLM_ENABLE_ALIGN is True            # 离线词级时间戳默认开
-    assert cfg.VLLM_ALIGN_DEVICE == "cuda"          # 对齐器默认 GPU（OOM 时可改 cpu）
+    assert cfg.VLLM_ALIGN_DEVICE == "cuda"          # 对齐器默认 GPU（长音频 OOM 时可改 cpu）
+    assert cfg.VLLM_INFER_BATCH_SIZE == 4           # 对齐/ASR 批大小有界（非 -1，防长音频对齐 OOM）
     assert cfg.VLLM_SEGMENT_GAP_MS == 500           # 离线分段词间隙阈值
 
 

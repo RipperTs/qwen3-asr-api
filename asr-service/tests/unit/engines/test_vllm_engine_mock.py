@@ -85,3 +85,9 @@ def test_align_device_normalized():
     assert VLLMASREngine()._align_device == "cuda"
     assert VLLMASREngine(align_device="CPU")._align_device == "cpu"
     assert VLLMASREngine(align_device=None)._align_device == "cuda"
+
+
+def test_infer_batch_size_default_bounded():
+    """对齐/ASR 批大小默认有界（4，非 -1）：防长音频把全部 180s 块一次对齐致 OOM。"""
+    assert VLLMASREngine()._infer_batch_size == 4
+    assert VLLMASREngine(infer_batch_size=1)._infer_batch_size == 1
