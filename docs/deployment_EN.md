@@ -176,6 +176,8 @@ bash docker/build.sh   # choose "4) vLLM"
 ```
 
 > The vLLM engine holds the GPU in a separate EngineCore subprocess and the service runs a single worker (PID 1 reaps the subprocess in the container). It loads HF full-precision `models/asr/0.6b`/`1.7b` (shares the `models/` mount with standard).
+>
+> **Models for offline word timestamps / speakers**: `--vllm-enable-align` (on by default) needs the aligner `models/asr/aligner` (Qwen3-ForcedAligner, pulled from HF); `--enable-speaker` needs the voiceprint model `models/speaker/campplus` (CAM++, ModelScope-only) — `requirements-vllm.txt` bundles `modelscope` as a download fallback, but pre-mounting this directory is recommended in production to avoid runtime network access. Speaker clustering depends on `scipy`/`scikit-learn` (also bundled).
 
 #### vLLM Startup Logs (expected, not failures)
 

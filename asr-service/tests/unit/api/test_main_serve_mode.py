@@ -565,3 +565,78 @@ def test_speaker_db_degrades_on_store_failure(isolated_create_app, monkeypatch, 
     assert health["status"] == "ready"
     assert health["speaker_db_enabled"] is False
     assert client.get("/v2/speakers", headers=auth).status_code == 503
+
+
+# ─── vLLM 模式 Phase 2：说话人分离 / 声纹库装配 ───
+
+def test_vllm_mode_speaker_enabled(isolated_create_app, monkeypatch):
+    """vllm + --enable-speaker：离线说话人分离装配，capabilities/health 置位；流式说话人仍无。"""
+    import app.main as main
+    _mock_vllm_engine(monkeypatch)
+
+    class FakeSpeaker:
+        def __init__(self, *a, **k): pass
+        def load(self): pass
+
+    monkeypatch.setattr(
+        "app.engines.speaker_embedding_engine.SpeakerEmbeddingEngine", FakeSpeaker)
+
+    app = main.create_app(_args(serve_mode="vllm", device="auto", enable_speaker=True))
+    client = TestClient(app)
+
+    caps = client.get("/v2/capabilities").json()
+    assert caps["speaker_labels"] is True              # 离线分离
+    assert caps["stream"]["speaker_labels"] is False   # 流式说话人仍无（仅离线）
+    assert client.get("/v2/health").json()["speaker_enabled"] is True
+
+
+def test_vllm_mode_speaker_load_failure_degrades(isolated_create_app, monkeypatch):
+    """vllm 说话人引擎加载失败：降级关闭、不影响服务（容错对齐 standard）。"""
+    import app.main as main
+    _mock_vllm_engine(monkeypatch)
+
+    class BoomSpeaker:
+        def __init__(self, *a, **k): pass
+        def load(self): raise RuntimeError("weights missing")
+
+    monkeypatch.setattr(
+        "app.engines.speaker_embedding_engine.SpeakerEmbeddingEngine", BoomSpeaker)
+
+    app = main.create_app(_args(serve_mode="vllm", device="auto", enable_speaker=True))
+    client = TestClient(app)
+    health = client.get("/v2/health").json()
+    assert health["status"] == "ready"
+    assert health["speaker_enabled"] is False
+    assert client.get("/v2/capabilities").json()["speaker_labels"] is False
+
+
+def test_vllm_mode_speaker_db_full_path(isolated_create_app, monkeypatch, tmp_path):
+    """vllm 声纹库全通：speaker_identification 置位、/v2/speakers 可列（真实 SpeakerStore）。"""
+    import app.main as main
+    _mock_vllm_engine(monkeypatch)
+    monkeypatch.setattr(
+        "app.engines.speaker_embedding_engine.SpeakerEmbeddingEngine", _OkSpeaker)
+
+    app = main.create_app(_args(serve_mode="vllm", device="auto", enable_speaker=True,
+                                api_key="k", enable_speaker_db=True,
+                                speaker_db_path=str(tmp_path / "spk.db")))
+    client = TestClient(app)
+    auth = {"Authorization": "Bearer k"}
+    assert client.get("/v2/health", headers=auth).json()["speaker_db_enabled"] is True
+    assert client.get("/v2/capabilities", headers=auth).json()["speaker_identification"] is True
+    assert client.get("/v2/speakers", headers=auth).json() == {"total": 0, "speakers": []}
+
+
+def test_vllm_mode_speaker_db_degrades_without_api_key(isolated_create_app, monkeypatch, tmp_path):
+    """vllm 声纹库合规硬约束：无 api_key → 降级关闭、端点 503（生物识别须鉴权）。"""
+    import app.main as main
+    _mock_vllm_engine(monkeypatch)
+    monkeypatch.setattr(
+        "app.engines.speaker_embedding_engine.SpeakerEmbeddingEngine", _OkSpeaker)
+
+    app = main.create_app(_args(serve_mode="vllm", device="auto", enable_speaker=True,
+                                enable_speaker_db=True,
+                                speaker_db_path=str(tmp_path / "spk.db")))
+    client = TestClient(app)
+    assert client.get("/v2/health").json()["speaker_db_enabled"] is False
+    assert client.get("/v2/speakers").status_code == 503

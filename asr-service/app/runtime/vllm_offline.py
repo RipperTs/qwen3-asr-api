@@ -1,13 +1,15 @@
-"""vLLM 模式离线转写处理器（Phase 1）。
+"""vLLM 模式离线转写处理器（Phase 1 + Phase 2 说话人）。
 
 供 TaskManager 的 process_fn 调用：上传音频经 ffmpeg 转 16k → 一次性 vLLM 批量
-transcribe → 按词间隙分段 → 组装成与 standard /v2/asr 同形的 result（segments /
-full_text / words / warnings）。
+transcribe → 标点优先分段 → （可选）说话人分离/识别叠加 → 组装成与 standard /v2/asr
+同形的 result（segments / full_text / words / speaker / speakers / warnings）。
 
 设计要点（见 docs/plan/features/20260612_vllm_offline_asr/）：
-- 不依赖 funasr：分段用词级时间戳的「词间隙」（对齐器开时）/ 整文兜底；标点用模型原生。
-- 顶层不 import vllm/qwen_asr（仅经传入的 engine 间接调用），依赖中性，standard venv 可单测。
+- 不依赖 funasr：分段用模型原生标点 + 词级时间戳定位；说话人用 CAM++ + scipy/sklearn 聚类。
+- 顶层不 import vllm/qwen_asr/torch（仅经传入的 engine/speaker_engine 间接调用），依赖中性，
+  standard venv 可单测（mock 引擎）。
 - transcribe 为单次阻塞调用、不可中断：仅在开始前检查取消以免空耗。
+- 说话人滑窗来源 = 传入的离线能量 VAD（无 funasr VAD），镜像 standard 的 vad_segments 路径。
 """
 import logging
 import os
@@ -20,8 +22,13 @@ from app.utils.result_parser import extract_text, extract_words
 logger = logging.getLogger(__name__)
 
 
-def run_vllm_offline(engine, task, *, progress_callback=None, cancelled=None) -> dict:
-    """执行一次离线转写，返回与 standard ASRPipeline.run 同形的 result dict。"""
+def run_vllm_offline(engine, task, *, progress_callback=None, cancelled=None,
+                     speaker_engine=None, speaker_service=None, energy_vad=None) -> dict:
+    """执行一次离线转写，返回与 standard ASRPipeline.run 同形的 result dict。
+
+    speaker_engine/speaker_service/energy_vad 为 Phase 2 说话人能力（均可缺省=未启用）：
+    speaker_engine 在 → diarize；再有 speaker_service 且 identify_speakers → 声纹识别/自动登记。
+    """
     task_id = task["task_id"]
     file_path = task["file_path"]
     language = task.get("language")
@@ -30,8 +37,15 @@ def run_vllm_offline(engine, task, *, progress_callback=None, cancelled=None) ->
 
     with_words = opts.get("with_words", True)
     max_segment = opts.get("max_segment")        # 秒；None → cfg.MAX_SEGMENT_DURATION
+    diarize = opts.get("diarize", True)
+    id_threshold = opts.get("speaker_id_threshold")
+    id_margin = opts.get("speaker_id_margin")
 
-    warnings = _collect_warnings(engine, opts, identify_speakers)
+    speaker_enabled = speaker_engine is not None
+    # 声纹识别真正能跑的前提：声纹库 + 说话人引擎 + diarize 同时就位（对齐 asr_pipeline）
+    spk_id_ready = speaker_service is not None and speaker_enabled and diarize
+    warnings = _collect_warnings(engine, opts, identify_speakers,
+                                 speaker_enabled=speaker_enabled, spk_id_ready=spk_id_ready)
 
     wav_path = None
     try:
@@ -57,32 +71,111 @@ def run_vllm_offline(engine, task, *, progress_callback=None, cancelled=None) ->
         results = engine.transcribe(wav_path, language=language, with_words=want_words)
 
         if progress_callback:
-            progress_callback(0.9)
+            progress_callback(0.85)
         full_text = extract_text(results).strip()
         words = extract_words(results, 0.0) if want_words else None
         segments = _segment(full_text, words, duration, max_segment)
 
+        # 说话人分离/识别（可选；容错——失败只丢标签，不破坏转写）
+        speakers = None
+        if speaker_enabled and diarize and segments and not (cancelled and cancelled()):
+            speakers = _diarize_and_identify(
+                speaker_engine, speaker_service, energy_vad, wav_path, segments, duration,
+                identify_speakers=identify_speakers, id_threshold=id_threshold, id_margin=id_margin,
+                progress_callback=progress_callback)
+
         if progress_callback:
             progress_callback(1.0)
-        return _result(segments, full_text, language, engine, warnings)
+        return _result(segments, full_text, language, engine, warnings, speakers=speakers)
     finally:
         _cleanup(file_path, wav_path)
 
 
-def _collect_warnings(engine, opts: dict, identify_speakers: bool) -> list:
-    """请求了但本模式不支持/无法生效的项 → 软提示（随 result 返回，不报错）。"""
+def _collect_warnings(engine, opts: dict, identify_speakers: bool, *,
+                      speaker_enabled: bool = False, spk_id_ready: bool = False) -> list:
+    """请求了但本模式不支持/无法生效的项 → 软提示（随 result 返回，不报错）。
+
+    speaker_enabled=False（未挂说话人引擎）时 diarize/identify 全部软提示；挂载后仅在
+    识别前提缺失（无声纹库 / diarize 关）时对 identify/id 阈值软提示——对齐 asr_pipeline。
+    """
     w = []
     if opts.get("with_punc") is False:
         w.append("with_punc")            # vLLM 标点由模型原生提供，无法单独关闭
     if opts.get("with_words") is True and not engine.align_enabled:
         w.append("with_words")           # 对齐器未加载
-    if opts.get("diarize") is True:
-        w.append("diarize")              # Phase 1 无说话人分离
-    if identify_speakers:
+    if opts.get("diarize") is True and not speaker_enabled:
+        w.append("diarize")              # 未挂说话人引擎（--enable-speaker 未开/加载失败）
+    if identify_speakers and not spk_id_ready:
         w.append("identify_speakers")
-    if opts.get("speaker_id_threshold") is not None or opts.get("speaker_id_margin") is not None:
+    if (opts.get("speaker_id_threshold") is not None
+            or opts.get("speaker_id_margin") is not None) and not spk_id_ready:
         w.append("speaker_id_threshold/margin")
     return w
+
+
+def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path, segments,
+                          duration, *, identify_speakers, id_threshold, id_margin,
+                          progress_callback=None):
+    """说话人分离（+可选声纹识别/自动登记），就地给 segments 叠加 speaker/speaker_name。
+
+    返回 speakers（labels_in_order 列表，或识别后带 speaker_id/name 的簇映射），无法分离
+    返回 None。永不抛错——容错对齐 standard：说话人失败不影响转写主链路。
+    镜像 asr_pipeline._run_diarization + 4.5/4.6 段，滑窗来源换成离线能量 VAD（无 funasr）。
+    """
+    import soundfile as sf
+    from app.engines.speaker_embedding_engine import make_windows
+    from app.runtime.speaker_cluster import DiarizationResult, cluster_offline
+
+    if progress_callback:
+        progress_callback(0.9)
+    speakers = None
+    diar = None
+    try:
+        # 语音区间：离线能量 VAD（无 funasr）；缺省/无段时退化为整段
+        vad_segments = energy_vad.detect(wav_path) if energy_vad is not None else []
+        if not vad_segments:
+            vad_segments = [(0, int(duration * 1000))]
+        windows = []
+        for st_ms, ed_ms in vad_segments:
+            windows.extend(make_windows(st_ms / 1000.0, ed_ms / 1000.0))
+        if not windows:
+            return None
+        if len(windows) > cfg.SPEAKER_MAX_WINDOWS:        # 抽稀防谱聚类 N² 亲和阵内存
+            k = -(-len(windows) // cfg.SPEAKER_MAX_WINDOWS)
+            windows = windows[::k]
+        wav, _sr = sf.read(wav_path, dtype="float32")     # 阶段 0 已保证 16k 单声道
+        embeddings = speaker_engine.embed_windows(wav, windows)
+        labels = cluster_offline(embeddings, max_speakers=cfg.SPEAKER_MAX)
+        diar = DiarizationResult(windows, labels, embeddings)
+        for seg in segments:
+            label = diar.label_for(seg["start"], seg["end"])
+            if label is not None:
+                seg["speaker"] = label
+        speakers = diar.labels_in_order
+        logger.info(f"[vllm-offline] 说话人分离完成: {len(speakers)} 人 {speakers}")
+    except Exception as e:
+        logger.warning(f"说话人分离失败，跳过: {e}")
+
+    # 声纹识别 + 自动登记（可选）：speakers 升级为带 speaker_id/name 的映射表；
+    # map_and_enroll_clusters 永不抛错（失败退回匿名）
+    if identify_speakers and speaker_service is not None and diar is not None:
+        try:
+            mapping = speaker_service.map_and_enroll_clusters(
+                diar.clusters, id_threshold=id_threshold, id_margin=id_margin)
+            name_of = {m["label"]: m for m in mapping}
+            for seg in segments:
+                m = name_of.get(seg.get("speaker"))
+                if m and m.get("name"):
+                    seg["speaker_name"] = m["name"]
+            speakers = mapping
+            named = sum(1 for m in mapping if m.get("name"))
+            logger.info(f"[vllm-offline] 声纹识别完成: {named}/{len(mapping)} 簇有名")
+        except Exception as e:
+            logger.warning(f"声纹识别失败，跳过: {e}")
+
+    if progress_callback:
+        progress_callback(0.95)
+    return speakers
 
 
 _SENTENCE_PUNCT = r"[。！？；!?;]"      # 句末标点（中英）→ 主切点
@@ -193,7 +286,7 @@ def _word_positions(full_text: str, words: list) -> list:
     return positions
 
 
-def _result(segments, full_text, language, engine, warnings) -> dict:
+def _result(segments, full_text, language, engine, warnings, speakers=None) -> dict:
     result = {
         "segments": segments,
         "full_text": full_text,
@@ -203,6 +296,8 @@ def _result(segments, full_text, language, engine, warnings) -> dict:
         # with_punc=false 时进 warnings 表达"无法关闭"。与 standard 的 bool 类型对齐。
         "punc_enabled": True,
     }
+    if speakers is not None:
+        result["speakers"] = speakers
     if warnings:
         result["warnings"] = warnings
     return result

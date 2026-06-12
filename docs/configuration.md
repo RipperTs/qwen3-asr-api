@@ -226,9 +226,9 @@ api_key: "sk-your-key"
 | 接口 | 离线 v1/v2 + 实时 WS（`--enable-stream`） | **离线 v1/v2 + 实时 WS `/v2/asr/stream`（恒开）** + `/health` `/capabilities` |
 | 增量结果（实时） | 无（按段 final） | **有 partial→final** |
 | 词级时间戳 | 支持 | **离线支持**（ForcedAligner，默认开）；实时不支持 |
-| 说话人分离/识别 | 支持 | 不支持（流式/离线均无；见下方说明） |
+| 说话人分离/识别 | 支持 | **离线支持**（CAM++，需 `--enable-speaker`；滑窗用能量 VAD）；实时不支持 |
 | 标点 | CT-Transformer（可关） | 模型原生（**不可单独关**） |
-| 离线分段边界 | FSMN-VAD | 词间隙 / 整文兜底（边界较粗） |
+| 离线分段边界 | FSMN-VAD | 标点优先 / 整文兜底（边界较粗） |
 | 设备 | GPU / CPU | **仅 CUDA GPU**（直接禁用 CPU，无 CPU 容器） |
 | 吞吐 | 多会话并发 | 单流串行（generate 串行，吞吐 ≈ standard） |
 | 依赖 / 镜像 | funasr + OpenVINO… | 独立 vLLM 环境（不含 funasr/OpenVINO），独立镜像 |
@@ -236,11 +236,11 @@ api_key: "sk-your-key"
 **为何独立环境**：vLLM 强绑定特定 torch/CUDA（与 standard 的 torch 不可共存），故须独立 `venv-vllm` 或独立镜像（`docker/Dockerfile.vllm`，基于 vLLM 官方镜像派生）。详见[部署文档](deployment.md)。
 
 **离线转写（`/v2/asr`）**：vllm 模式离线复用与 standard **完全一致的异步任务契约**（`POST /v2/asr` 返回 `task_id` → 轮询 `GET /v2/tasks/{id}`、持久化、取消），ASR 走 vLLM 批量 `transcribe`。与 standard 的差异均为**质量差异、不破坏 result 结构**，并以 `result.warnings` 标注：
-- **分段**：词级时间戳的「词间隙」断句（`--vllm-segment-gap-ms`，默认 500ms）+ `--max-segment` 二次切；未开对齐器时退化为整文单段。边界精度低于 FSMN-VAD。
+- **分段**：模型原生标点优先断句（句末 `。！？；` 切句，超 `--max-segment` 的长句在逗号处细切），词级时间戳仅用于定位 start/end；无对齐器时退化为词间隙（`--vllm-segment-gap-ms`，默认 500ms）/ 整文单段。边界精度低于 FSMN-VAD。
 - **标点**：Qwen3-ASR 模型原生输出（已含标点），无法单独关闭；请求 `with_punc=false` 仅记入 `warnings`。
 - **词级时间戳**：`--vllm-enable-align`（默认开）经 ForcedAligner 产出，与 standard 同款；`--no-vllm-align` 可关以省显存。
-- **说话人**：本期不支持，请求 `diarize`/`identify_speakers` 记入 `warnings`。
-> 需要 FSMN 精分段 / CT-Transformer 标点 / 说话人的高保真离线，请用 `standard` 模式。
+- **说话人分离/识别**：`--enable-speaker`（+ 声纹库 `--enable-speaker-db`）后离线 `segments[].speaker` / `speaker_name` / `speakers` 字段与 standard 一致；引擎为 CAM++（CPU、torch，非 funasr），**滑窗语音区间用能量 VAD 替代 FSMN-VAD**（边界较粗）。未开启时请求 `diarize`/`identify_speakers` 记入 `warnings`。需额外依赖 `scipy`/`scikit-learn`/`modelscope`（或预挂 CAM++ 模型目录），见 [requirements-vllm.txt](../asr-service/requirements-vllm.txt)。实时流式仍无说话人。
+> 需要 FSMN 精分段 / CT-Transformer 标点 / 实时说话人的高保真，请用 `standard` 模式。
 
 **启动**
 

@@ -226,9 +226,9 @@ api_key: "sk-your-key"
 | Endpoints | offline v1/v2 + realtime WS (`--enable-stream`) | **offline v1/v2 + realtime WS `/v2/asr/stream` (always on)** + `/health` `/capabilities` |
 | Incremental results (realtime) | none (per-segment final) | **partial→final** |
 | Word timestamps | supported | **offline supported** (ForcedAligner, on by default); not in realtime |
-| Speaker diarization/ID | supported | not supported (neither offline nor realtime; see below) |
+| Speaker diarization/ID | supported | **offline supported** (CAM++, requires `--enable-speaker`; energy-VAD windowing); not in realtime |
 | Punctuation | CT-Transformer (toggleable) | model-native (**cannot be turned off**) |
-| Offline segment boundaries | FSMN-VAD | word-gap / whole-text fallback (coarser) |
+| Offline segment boundaries | FSMN-VAD | punctuation-first / whole-text fallback (coarser) |
 | Device | GPU / CPU | **CUDA GPU only** (CPU disabled by design, no CPU image) |
 | Throughput | concurrent sessions | single-stream serial (generate is serial; ≈ standard) |
 | Deps / image | funasr + OpenVINO… | isolated vLLM env (no funasr/OpenVINO), separate image |
@@ -236,11 +236,11 @@ api_key: "sk-your-key"
 **Why an isolated environment**: vLLM pins a specific torch/CUDA (incompatible with standard's torch), so it requires an isolated `venv-vllm` or a separate image (`docker/Dockerfile.vllm`, derived from the official vLLM image). See the [deployment guide](deployment_EN.md).
 
 **Offline transcription (`/v2/asr`)**: vllm mode reuses the **exact same async task contract** as standard (`POST /v2/asr` → `task_id` → poll `GET /v2/tasks/{id}`, persistence, cancel), with ASR via vLLM batched `transcribe`. All differences from standard are **quality differences that do not break the result structure**, and are flagged in `result.warnings`:
-- **Segmentation**: word-gap splitting using word timestamps (`--vllm-segment-gap-ms`, default 500ms) + `--max-segment` re-split; falls back to a single whole-text segment when the aligner is off. Boundary precision is lower than FSMN-VAD.
+- **Segmentation**: punctuation-first splitting on model-native sentence punctuation (`。！？；`, with comma sub-split for sentences exceeding `--max-segment`); word timestamps only locate start/end. Falls back to inter-word gap (`--vllm-segment-gap-ms`, default 500ms) / a single whole-text segment when the aligner is off. Boundary precision is lower than FSMN-VAD.
 - **Punctuation**: produced natively by Qwen3-ASR (already punctuated); cannot be turned off — `with_punc=false` is recorded in `warnings`.
 - **Word timestamps**: `--vllm-enable-align` (on by default) via ForcedAligner, same as standard; `--no-vllm-align` disables it to save VRAM.
-- **Speaker**: not supported this phase; `diarize`/`identify_speakers` are recorded in `warnings`.
-> For high-fidelity offline with FSMN segmentation / CT-Transformer punctuation / speakers, use `standard` mode.
+- **Speaker diarization/ID**: with `--enable-speaker` (plus `--enable-speaker-db` for the voiceprint DB), offline `segments[].speaker` / `speaker_name` / `speakers` match standard; the engine is CAM++ (CPU, torch, not funasr), and **windowing uses an energy VAD instead of FSMN-VAD** (coarser boundaries). When disabled, `diarize`/`identify_speakers` are recorded in `warnings`. Requires extra deps `scipy`/`scikit-learn`/`modelscope` (or a pre-mounted CAM++ model dir); see [requirements-vllm.txt](../asr-service/requirements-vllm.txt). Realtime streaming still has no speaker labels.
+> For high-fidelity with FSMN segmentation / CT-Transformer punctuation / realtime speakers, use `standard` mode.
 
 **Start**
 

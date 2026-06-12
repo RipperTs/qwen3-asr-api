@@ -6,6 +6,7 @@ dependency-neutral：standard venv 即可运行。
 """
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from app.runtime import vllm_offline as vo
@@ -138,6 +139,111 @@ def test_warnings_all():
 def test_warnings_clean_when_align_on():
     # 对齐器开 + 仅请求 words → 无 warning
     assert vo._collect_warnings(_Engine(align=True), {"with_words": True}, False) == []
+
+
+def test_warnings_diarize_suppressed_when_speaker_on():
+    """说话人引擎挂载（speaker_enabled）→ diarize 不再软提示（Phase 2）。"""
+    w = vo._collect_warnings(_Engine(align=True), {"diarize": True}, False,
+                             speaker_enabled=True, spk_id_ready=False)
+    assert "diarize" not in w
+
+
+def test_warnings_identify_when_no_speaker_db():
+    """开了说话人分离但无声纹库（spk_id_ready=False）→ identify/id 阈值软提示。"""
+    w = vo._collect_warnings(
+        _Engine(align=True),
+        {"diarize": True, "speaker_id_threshold": 0.5}, True,
+        speaker_enabled=True, spk_id_ready=False)
+    assert "diarize" not in w
+    assert "identify_speakers" in w
+    assert "speaker_id_threshold/margin" in w
+
+
+# ── 说话人分离 / 识别（Phase 2，mock 引擎/服务，复用真实 speaker_cluster）──
+class _SpeakerEngine:
+    """mock CAM++：所有窗回放同一归一化向量 → cluster_offline 归为单簇 A。"""
+    EMB_DIM = 192
+
+    def embed_windows(self, wav, windows):
+        v = np.zeros((len(windows), self.EMB_DIM), dtype=np.float32)
+        v[:, 0] = 1.0
+        return v
+
+
+class _EnergyVAD:
+    def detect(self, wav_path):
+        return [(0, 5000)]
+
+
+class _SpeakerService:
+    def __init__(self):
+        self.calls = []
+
+    def map_and_enroll_clusters(self, clusters, *, id_threshold=None, id_margin=None):
+        self.calls.append((clusters, id_threshold, id_margin))
+        return [{"label": "A", "speaker_id": "sp1", "name": "张三", "score": 0.9}]
+
+
+@pytest.fixture
+def patched_spk(monkeypatch, tmp_path):
+    """写真实 5s 静音 wav（_diarize 需 sf.read 真文件）；embed_windows 已 mock 不读内容。"""
+    import soundfile as sf
+    monkeypatch.setattr(cfg, "UPLOADS_DIR", str(tmp_path))
+    monkeypatch.setattr(vo, "convert_to_wav",
+                        lambda i, o: sf.write(o, np.zeros(16000 * 5, dtype="float32"), 16000))
+    monkeypatch.setattr(vo, "get_audio_duration", lambda p: 5.0)
+    return monkeypatch
+
+
+def _spk_trans():
+    return [_trans("你好。世界。",
+                   [("你", 0.0, 0.2), ("好", 0.25, 0.4), ("世", 1.2, 1.4), ("界", 1.45, 1.6)])]
+
+
+def test_run_with_diarization(patched_spk):
+    """speaker_engine 在 + diarize → 每段叠加 speaker，result.speakers=['A']，无 diarize 软提示。"""
+    eng = _Engine(align=True, result=_spk_trans())
+    task = {"task_id": "d1", "file_path": "/x.wav", "options": {"diarize": True}}
+    r = vo.run_vllm_offline(eng, task, speaker_engine=_SpeakerEngine(), energy_vad=_EnergyVAD())
+
+    assert r["speakers"] == ["A"]
+    assert len(r["segments"]) == 2
+    assert all(s.get("speaker") == "A" for s in r["segments"])
+    assert "diarize" not in r.get("warnings", [])
+
+
+def test_run_with_identification(patched_spk):
+    """identify_speakers + 声纹库 → speakers 升级为映射，段叠加 speaker_name。"""
+    eng = _Engine(align=True, result=_spk_trans())
+    svc = _SpeakerService()
+    task = {"task_id": "i1", "file_path": "/x.wav", "identify_speakers": True,
+            "options": {"diarize": True, "speaker_id_threshold": 0.4}}
+    r = vo.run_vllm_offline(eng, task, speaker_engine=_SpeakerEngine(),
+                            speaker_service=svc, energy_vad=_EnergyVAD())
+
+    assert r["speakers"] == [{"label": "A", "speaker_id": "sp1", "name": "张三", "score": 0.9}]
+    assert all(s.get("speaker_name") == "张三" for s in r["segments"])
+    assert svc.calls and svc.calls[0][1] == 0.4        # id_threshold 透传
+
+
+def test_run_diarize_disabled_no_speakers(patched_spk):
+    """diarize=false → 不分离，无 speaker 字段、无 speakers。"""
+    eng = _Engine(align=True, result=_spk_trans())
+    task = {"task_id": "d2", "file_path": "/x.wav", "options": {"diarize": False}}
+    r = vo.run_vllm_offline(eng, task, speaker_engine=_SpeakerEngine(), energy_vad=_EnergyVAD())
+
+    assert "speakers" not in r
+    assert all("speaker" not in s for s in r["segments"])
+
+
+def test_run_no_speaker_engine_warns_diarize(patched_spk):
+    """未挂说话人引擎但请求 diarize → 软提示，转写不受影响。"""
+    eng = _Engine(align=True, result=_spk_trans())
+    task = {"task_id": "d3", "file_path": "/x.wav", "options": {"diarize": True}}
+    r = vo.run_vllm_offline(eng, task)        # speaker_engine=None
+
+    assert "speakers" not in r
+    assert "diarize" in r["warnings"]
 
 
 # ── run_vllm_offline 端到端 ────────────────────────────────

@@ -584,6 +584,60 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         logger.critical(f"vLLM 引擎加载失败: {e}", exc_info=True)
         sys.exit(1)
 
+    # 说话人分离引擎（Phase 2，可选，非 funasr：CAM++ + scipy/sklearn 聚类）：加载失败
+    # 降级关闭，不影响转写/实时主链路（容错对齐 standard）。
+    speaker_engine = None
+    if cfg.ENABLE_SPEAKER:
+        from app.engines.speaker_embedding_engine import SpeakerEmbeddingEngine
+        speaker_engine = SpeakerEmbeddingEngine()
+        try:
+            speaker_engine.load()
+        except Exception as e:
+            logger.warning(f"说话人引擎加载失败，已降级关闭: {e}")
+            speaker_engine = None
+    speaker_enabled = speaker_engine is not None
+
+    # 离线能量 VAD（无 funasr）：说话人滑窗来源 + 声纹库登记/识别样本切分的 vad_engine 替身
+    energy_vad = None
+    if speaker_enabled:
+        from app.runtime.energy_vad import EnergyVAD
+        energy_vad = EnergyVAD(energy_floor_dbfs=cfg.VLLM_ENERGY_FLOOR_DBFS)
+
+    # 声纹库（Phase 2，可选）：降级矩阵按序检查，任一失败 = ERROR 日志 + 模块关闭、服务继续
+    speaker_service = None
+    speaker_store = None
+    speaker_tag_mismatch = False
+    if getattr(args, "enable_speaker_db", False):
+        if speaker_engine is None:                       # ① 依赖分离引擎
+            logger.error("声纹库需要 --enable-speaker 且说话人引擎加载成功，已降级关闭")
+        elif not cfg.API_KEY:                            # ② 合规硬规则
+            logger.error("声纹库要求配置 api_key（声纹属生物识别信息，"
+                         "不允许无鉴权访问），已降级关闭")
+        else:
+            from app.engines.speaker_embedding_engine import SpeakerEmbeddingEngine
+            from app.runtime.speaker_store import SpeakerStore
+            from app.runtime.speaker_service import SpeakerService
+            spk_db_path = cfg.SPEAKER_DB_PATH
+            if not os.path.isabs(spk_db_path):
+                spk_db_path = os.path.join(cfg.BASE_DIR, spk_db_path)
+            try:
+                speaker_store = SpeakerStore(
+                    spk_db_path, model_tag=SpeakerEmbeddingEngine.MODEL_TAG)
+                # ③ model_tag 失配：仅禁登记/识别（503），GET/DELETE 保留（被遗忘权）
+                speaker_tag_mismatch = not speaker_store.check_model_tag(
+                    SpeakerEmbeddingEngine.MODEL_TAG)
+                if speaker_tag_mismatch:
+                    logger.error("声纹库 model_tag 与当前引擎不一致：登记/识别已禁用，"
+                                 "管理端点保留（如需重建请删除库文件或迁移模板）")
+                speaker_service = SpeakerService(speaker_store, speaker_engine, energy_vad)
+            except Exception as e:                       # ④ 建库失败
+                logger.error(f"声纹库初始化失败，已降级关闭: {e}")
+                speaker_service = None
+                speaker_store = None
+    speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
+    # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
+    linked_speaker_service = speaker_service if speaker_db_enabled else None
+
     stream_backend = VllmStreamBackend(
         engine,
         max_sessions=cfg.MAX_STREAM_SESSIONS,
@@ -628,6 +682,9 @@ def _assemble_vllm(app: FastAPI, args) -> None:
             engine, task,
             progress_callback=on_progress,
             cancelled=lambda: task_manager.is_stopping or task_manager.is_cancelled(task["task_id"]),
+            speaker_engine=speaker_engine,
+            speaker_service=linked_speaker_service,
+            energy_vad=energy_vad,
         )
 
     task_manager.set_processor(process_task)
@@ -636,17 +693,23 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     capabilities = {
         "mode": "vllm",
         "offline_api": True,
+        "speaker_labels": speaker_enabled,             # Phase 2：离线说话人分离
+        "speaker_identification": speaker_db_enabled,  # Phase 2：声纹识别（需声纹库）
         "stream": {
             "enabled": True,
             "backend": "vllm-native",
             "path": "/v2/asr/stream",
             "partial_results": True,
             "word_timestamps": False,
+            "speaker_labels": False,                   # 流式说话人仍无（仅离线，见能力对照）
         },
-        # 离线可覆盖默认（Web UI 占位/对照用）；vLLM 无 FSMN，分段用词间隙
+        # 离线可覆盖默认（Web UI 占位/对照用）；vLLM 无 FSMN，分段用标点优先
         "defaults": {
             "max_segment": cfg.MAX_SEGMENT_DURATION,
             "segment_gap_ms": cfg.VLLM_SEGMENT_GAP_MS,
+            "speaker_max": cfg.SPEAKER_MAX,
+            "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
+            "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
         },
     }
     service_info = {
@@ -656,6 +719,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         "model_size": model_size,
         "align_enabled": engine.align_enabled,
         "punc_enabled": True,        # 模型原生标点（恒有，不可单独关；详见能力对照文档）
+        "speaker_enabled": speaker_enabled,
+        "speaker_db_enabled": speaker_db_enabled,
         "asr_backend": "vllm",
         "config_file": cfg.CONFIG_FILE,
         "capabilities": capabilities,
@@ -670,6 +735,14 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     init_routes(task_manager, task_store)
     app.include_router(build_offline_router("/v1", include_deprecated=True))
     app.include_router(build_offline_router("/v2"))
+
+    # 声纹库路由（仅 /v2）：无条件挂载——未启用/降级时端点统一 503（与 standard 同）
+    from app.api.speaker_routes import init_speaker_routes, build_speakers_router
+    init_speaker_routes(speaker_service, tag_mismatch=speaker_tag_mismatch)
+    app.include_router(build_speakers_router())
+    if speaker_db_enabled:
+        logger.info(f"声纹库已启用：/v2/speakers*（{speaker_store.speaker_count} 人，"
+                    f"自动登记={'开' if cfg.SPEAKER_AUTO_ENROLL else '关'}）")
 
     # 条件挂载 Web UI（演示页已内置 partial→final 实时渲染）
     if getattr(args, "web", False):
@@ -686,6 +759,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         logger.info("收到终止信号，正在关闭 vLLM 实时后端与离线任务...")
         task_manager.shutdown()
         stream_backend.shutdown()
+        if speaker_store is not None:
+            speaker_store.close()
         logger.info("Qwen3-ASR Service (vllm) 已安全退出")
 
     logger.info(f"运行模式: {service_info}")
