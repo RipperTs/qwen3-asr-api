@@ -21,6 +21,10 @@ python-multipart==0.0.32        # 离线 /v2/asr multipart 文件上传（FastAP
 # 配置文件（--config）
 PyYAML==6.0.3
 
+# 兼容接口（Phase 3，可选 --enable-openai-api/--enable-dashscope-api）：DashScope file_urls
+# 服务端下载（compat/fetch.py，SSRF 防护）。注：vllm 基础镜像通常已传递携带 httpx，此处显式声明。
+httpx==0.28.1
+
 # 音频处理（流式 PCM / 端点能量计算 / 内存重采样回退）
 numpy==2.2.6
 librosa==0.11.0

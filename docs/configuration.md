@@ -242,6 +242,12 @@ api_key: "sk-your-key"
 - **说话人分离/识别**：`--enable-speaker`（+ 声纹库 `--enable-speaker-db`）后离线 `segments[].speaker` / `speaker_name` / `speakers` 字段与 standard 一致；引擎为 CAM++（CPU、torch，非 funasr），**滑窗语音区间用能量 VAD 替代 FSMN-VAD**（边界较粗）。未开启时请求 `diarize`/`identify_speakers` 记入 `warnings`。需额外依赖 `scipy`/`scikit-learn`/`modelscope`（或预挂 CAM++ 模型目录），见 [requirements-vllm.txt](../asr-service/requirements-vllm.txt)。实时流式仍无说话人。
 > 需要 FSMN 精分段 / CT-Transformer 标点 / 实时说话人的高保真，请用 `standard` 模式。
 
+**兼容接口（`/compat/*`）**：vllm 模式同样支持 OpenAI / DashScope 兼容接口，开关与 standard 一致（`--enable-openai-api` / `--enable-dashscope-api`）；接口文档见 [开发文档](development.md)。与 standard 的差异：
+- **离线兼容**（OpenAI `audio/transcriptions`·`models`、DashScope 录音文件识别）复用 vLLM 离线 pipeline，故分段/标点/说话人质量同上节所述；`audio/translations` 维持 501（服务仅 ASR，与 standard 天然对齐）。
+- **实时兼容**（OpenAI `WS /realtime`、DashScope `WS …/inference`）随兼容开关一并挂载（vLLM 流式恒开，**无需** `--enable-stream`）；当前为**整句下发**（finals-only），vLLM 的逐字 partial 增量暂不经兼容协议下发（`capabilities.compat.realtime_partial=false`）。
+- DashScope file_urls 服务端下载需 `httpx`（已含于 requirements-vllm），SSRF 守卫与 `--compat-fetch-*` 参数沿用 standard。
+- `/capabilities` 的 `compat` 段如实反映已挂端点：`{openai, dashscope, realtime, realtime_partial}`。
+
 **启动**
 
 ```bash

@@ -711,6 +711,15 @@ def _assemble_vllm(app: FastAPI, args) -> None:
             "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
             "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
         },
+        # 兼容接口（Phase 3）：据 --enable-openai-api/--enable-dashscope-api 实挂；vLLM 流式恒开，
+        # 实时兼容随离线开关一并挂（无需 --enable-stream）。realtime_partial=R1 finals-only（不发增量）
+        "compat": {
+            "openai": getattr(args, "enable_openai_api", False),
+            "dashscope": getattr(args, "enable_dashscope_api", False),
+            "realtime": getattr(args, "enable_openai_api", False)
+            or getattr(args, "enable_dashscope_api", False),
+            "realtime_partial": False,
+        },
     }
     service_info = {
         "status": "ready",
@@ -743,6 +752,31 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     if speaker_db_enabled:
         logger.info(f"声纹库已启用：/v2/speakers*（{speaker_store.speaker_count} 人，"
                     f"自动登记={'开' if cfg.SPEAKER_AUTO_ENROLL else '关'}）")
+
+    # 兼容接口（/compat/*，Phase 3）：离线复用 vLLM 任务层，实时复用 vLLM 流式后端。
+    # 与 standard 唯一差异：vLLM 流式恒开，故实时兼容随离线开关挂载（无需 --enable-stream）；
+    # 实时为 R1 finals-only（ws_bridge 跳过 partial）。compat 代码依赖中性，惰性导入。
+    enable_openai = getattr(args, "enable_openai_api", False)
+    enable_dashscope = getattr(args, "enable_dashscope_api", False)
+    if enable_openai or enable_dashscope:
+        from app.api.compat import init_compat
+        from app.api.compat.errors import register_compat_exception_handlers
+        init_compat(task_manager=task_manager, task_store=task_store,
+                    backend=stream_backend, service_info=service_info)
+        register_compat_exception_handlers(app)
+    if enable_openai:
+        from app.api.compat.openai_routes import build_openai_router
+        from app.api.compat.openai_ws_routes import build_openai_ws_router
+        app.include_router(build_openai_router())
+        app.include_router(build_openai_ws_router())
+        logger.info("OpenAI 兼容接口已启用：/compat/openai/v1/*（含实时 WS /realtime，整句下发）")
+    if enable_dashscope:
+        from app.api.compat.dashscope_routes import build_dashscope_router
+        from app.api.compat.dashscope_ws_routes import build_dashscope_ws_router
+        app.include_router(build_dashscope_router())
+        app.include_router(build_dashscope_ws_router())
+        logger.info("DashScope 兼容接口已启用：/compat/dashscope/api/v1/*"
+                    "（含实时 WS /api-ws/v1/inference，整句下发）")
 
     # 条件挂载 Web UI（演示页已内置 partial→final 实时渲染）
     if getattr(args, "web", False):

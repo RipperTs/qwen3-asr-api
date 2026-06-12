@@ -14,7 +14,10 @@ adapter 鸭子接口：
   translate_error(code, message, *, fatal=False) -> dict
   async on_finish(ws)                    # end（HARD_END）冲刷后（DashScope task-finished；OpenAI 不触发）
 
-route B 只产整句 final（capabilities.partial_results=false），故 Stage A 不发增量。
+partial 守卫（R1 finals-only）：route B 只产整句 final；vLLM 路线 A 会产 partial 增量。
+消费循环统一只把 type!="partial" 的事件交 adapter.translate_finals——故两种后端下兼容客户端
+均收到整句 final（与 standard 行为一致），不把 vLLM 的 partial 误当 completed 下发。
+增量转译（OpenAI delta / DashScope 中间 result-generated）为后续 R2 增强，本骨架不涉。
 """
 import asyncio
 import logging
@@ -46,23 +49,28 @@ async def _run_round(ws: WebSocket, adapter, session, deadline, loop, holder) ->
     frame_q: asyncio.Queue = asyncio.Queue()
     state = {"backlog": 0}
 
+    async def _emit(f):
+        # finals-only 守卫：vLLM 路线 A 的 partial 增量不下发（R1）；仅 final 交 adapter，
+        # 与 route B 行为一致。见模块文档「partial 守卫」。
+        if f.get("type") == "partial":
+            return
+        for ev in adapter.translate_finals(f):
+            await ws.send_json(ev)
+
     async def _consume():
         while True:
             item = await frame_q.get()
             if item is _SOFT_FLUSH:
                 async for f in session.flush():
-                    for ev in adapter.translate_finals(f):
-                        await ws.send_json(ev)
+                    await _emit(f)
                 continue
             if item is _HARD_END:
                 async for f in session.flush():
-                    for ev in adapter.translate_finals(f):
-                        await ws.send_json(ev)
+                    await _emit(f)
                 return
             try:
                 async for f in session.feed_audio(item):
-                    for ev in adapter.translate_finals(f):
-                        await ws.send_json(ev)
+                    await _emit(f)
             except WebSocketDisconnect:
                 raise
             except Exception as e:

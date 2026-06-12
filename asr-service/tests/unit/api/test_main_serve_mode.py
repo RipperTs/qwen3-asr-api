@@ -640,3 +640,53 @@ def test_vllm_mode_speaker_db_degrades_without_api_key(isolated_create_app, monk
     client = TestClient(app)
     assert client.get("/v2/health").json()["speaker_db_enabled"] is False
     assert client.get("/v2/speakers").status_code == 503
+
+
+# ─── vLLM 模式 Phase 3：兼容接口装配 ───
+
+def test_vllm_mode_compat_openai_mounted(isolated_create_app, monkeypatch):
+    """vllm + --enable-openai-api：/compat/openai/v1/models 可达；capabilities.compat 置位。
+    实时随离线开关挂（vLLM 流式恒开，无需 --enable-stream），R1 finals-only。"""
+    import app.main as main
+    _mock_vllm_engine(monkeypatch)
+    app = main.create_app(_args(serve_mode="vllm", device="auto",
+                                api_key="k", enable_openai_api=True))
+    client = TestClient(app)
+
+    compat = client.get("/v2/capabilities").json()["compat"]
+    assert compat["openai"] is True
+    assert compat["dashscope"] is False
+    assert compat["realtime"] is True             # vLLM 流式恒开 → 实时兼容随挂
+    assert compat["realtime_partial"] is False    # R1 finals-only（不发增量）
+
+    r = client.get("/compat/openai/v1/models", headers={"Authorization": "Bearer k"})
+    assert r.status_code == 200
+    assert r.json()["data"][0]["id"].startswith("qwen3-asr-")
+
+
+def test_vllm_mode_compat_dashscope_mounted(isolated_create_app, monkeypatch):
+    """vllm + --enable-dashscope-api：DashScope 路由挂载、capabilities.compat.dashscope 置位。"""
+    import app.main as main
+    _mock_vllm_engine(monkeypatch)
+    app = main.create_app(_args(serve_mode="vllm", device="auto",
+                                api_key="k", enable_dashscope_api=True))
+    client = TestClient(app)
+
+    compat = client.get("/v2/capabilities").json()["compat"]
+    assert compat["dashscope"] is True and compat["openai"] is False
+    assert compat["realtime"] is True
+    # 提交端点已挂载（无 body/auth → 401/422，非 404）
+    r = client.post("/compat/dashscope/api/v1/services/audio/asr/transcription")
+    assert r.status_code != 404
+
+
+def test_vllm_mode_compat_disabled_by_default(isolated_create_app, monkeypatch):
+    """未开启兼容接口：compat 全 false，/compat 路由不挂（404）。"""
+    import app.main as main
+    _mock_vllm_engine(monkeypatch)
+    app = main.create_app(_args(serve_mode="vllm", device="auto"))
+    client = TestClient(app)
+
+    assert client.get("/v2/capabilities").json()["compat"] == {
+        "openai": False, "dashscope": False, "realtime": False, "realtime_partial": False}
+    assert client.get("/compat/openai/v1/models").status_code == 404

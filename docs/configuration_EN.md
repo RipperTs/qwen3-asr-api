@@ -242,6 +242,12 @@ api_key: "sk-your-key"
 - **Speaker diarization/ID**: with `--enable-speaker` (plus `--enable-speaker-db` for the voiceprint DB), offline `segments[].speaker` / `speaker_name` / `speakers` match standard; the engine is CAM++ (CPU, torch, not funasr), and **windowing uses an energy VAD instead of FSMN-VAD** (coarser boundaries). When disabled, `diarize`/`identify_speakers` are recorded in `warnings`. Requires extra deps `scipy`/`scikit-learn`/`modelscope` (or a pre-mounted CAM++ model dir); see [requirements-vllm.txt](../asr-service/requirements-vllm.txt). Realtime streaming still has no speaker labels.
 > For high-fidelity with FSMN segmentation / CT-Transformer punctuation / realtime speakers, use `standard` mode.
 
+**Compatibility APIs (`/compat/*`)**: vllm mode also supports the OpenAI / DashScope compatibility APIs, with the same switches as standard (`--enable-openai-api` / `--enable-dashscope-api`); endpoint docs are in the [development guide](development_EN.md). Differences from standard:
+- **Offline compat** (OpenAI `audio/transcriptions`·`models`, DashScope file transcription) reuses the vLLM offline pipeline, so segmentation/punctuation/speaker quality is as described above; `audio/translations` stays 501 (ASR-only, naturally aligned with standard).
+- **Realtime compat** (OpenAI `WS /realtime`, DashScope `WS …/inference`) is mounted alongside the compat switches (vLLM streaming is always on, **no** `--enable-stream` needed); it currently emits **whole sentences** (finals-only) — vLLM's incremental partials are not yet forwarded over the compat protocols (`capabilities.compat.realtime_partial=false`).
+- DashScope server-side `file_urls` download needs `httpx` (bundled in requirements-vllm); the SSRF guard and `--compat-fetch-*` options are inherited from standard.
+- The `compat` section of `/capabilities` reflects the mounted endpoints: `{openai, dashscope, realtime, realtime_partial}`.
+
 **Start**
 
 ```bash
