@@ -58,7 +58,7 @@ def isolated_create_app(tmp_path, monkeypatch):
 
 
 def _mock_vllm_engine(monkeypatch):
-    """mock vllm 引擎与设备，避免真实 GPU / vLLM 加载（体例同 standard 重引擎 mock）。"""
+    """mock vllm 引擎/设备/离线任务层，避免真实 GPU / vLLM 加载 / worker 线程。"""
     import app.main as main
     monkeypatch.setattr(main, "detect_device",
                         lambda: {"type": "cuda", "vram_gb": 24.0, "name": "FakeGPU"})
@@ -67,8 +67,22 @@ def _mock_vllm_engine(monkeypatch):
     class FakeVLLMEngine:
         def __init__(self, *a, **k): pass
         def load(self): pass
+        @property
+        def align_enabled(self): return True       # Phase 1：离线 transcribe 出词级时间戳
 
     monkeypatch.setattr("app.engines.vllm_asr_engine.VLLMASREngine", FakeVLLMEngine)
+
+    # 离线任务层在 _assemble_vllm 内惰性导入（venv-vllm 顶层为 None）；patch 真实路径
+    # 拦截，避免真实 TaskManager worker 线程
+    class FakeTM:
+        def __init__(self, *a, **k): pass
+        def set_processor(self, fn): pass
+        def start(self): pass
+        def shutdown(self): pass
+        def list_tasks(self, status=None): return []
+        def get_task(self, task_id): return None
+
+    monkeypatch.setattr("app.runtime.task_manager.TaskManager", FakeTM)
 
 
 def test_vllm_mode_mounts_stream_and_common(isolated_create_app, monkeypatch):
@@ -78,10 +92,12 @@ def test_vllm_mode_mounts_stream_and_common(isolated_create_app, monkeypatch):
     app = main.create_app(_args(serve_mode="vllm", device="auto"))
     client = TestClient(app)
 
-    # health 反映 vllm 模式 + 流式已启用（路线 A，含 partial）
+    # health 反映 vllm 模式 + 流式已启用（路线 A，含 partial）+ 离线已挂（Phase 1）
     health = client.get("/v1/health").json()
     assert health["mode"] == "vllm"
-    assert health["capabilities"]["offline_api"] is False
+    assert health["capabilities"]["offline_api"] is True       # Phase 1：离线已接入
+    assert health["align_enabled"] is True                     # 对齐器（词级时间戳）
+    assert health["punc_enabled"] is True                      # 模型原生标点
     stream = health["capabilities"]["stream"]
     assert stream["backend"] == "vllm-native"
     assert stream["enabled"] is True
@@ -93,10 +109,9 @@ def test_vllm_mode_mounts_stream_and_common(isolated_create_app, monkeypatch):
     assert client.get("/v1/capabilities").json()["mode"] == "vllm"
     assert client.get("/v2/capabilities").json()["mode"] == "vllm"
 
-    # vllm 模式不挂离线接口
-    assert client.get("/v1/tasks").status_code == 404
-    assert client.get("/v2/tasks").status_code == 404
-    assert client.post("/v1/asr", files={"file": ("a.wav", b"x", "audio/wav")}).status_code == 404
+    # vllm 模式现挂离线接口（与 standard 同一套契约）：/tasks 可达（非 404）
+    assert client.get("/v1/tasks").status_code == 200
+    assert client.get("/v2/tasks").status_code == 200
 
     # 实时端点已挂载：连接即收到 session.created（vllm-native，含 partial）
     with client.websocket_connect("/v2/asr/stream") as ws:
@@ -249,13 +264,15 @@ def test_health_echoes_config_file(isolated_create_app, monkeypatch):
 
 def test_config_vllm_defaults():
     import app.config as cfg
-    assert cfg.VLLM_GPU_MEMORY_UTILIZATION == 0.8
-    assert cfg.VLLM_MAX_MODEL_LEN is None
+    assert cfg.VLLM_GPU_MEMORY_UTILIZATION == 0.6   # 单流 ASR 调优（原 0.8 过大）
+    assert cfg.VLLM_MAX_MODEL_LEN == 32768          # 压低 KV 下限，使低占用率可启动
     assert cfg.VLLM_CHUNK_SIZE_SEC == 1.0       # V0 实测定档（细腻 partial）
     assert cfg.VLLM_CONCURRENCY == 1            # generate 串行，>1 无吞吐收益
     assert cfg.VLLM_MAX_UTTERANCE_SEC == 20
     assert cfg.VLLM_ENERGY_FLOOR_DBFS == -45.0
     assert cfg.VLLM_END_SILENCE_MS == 800
+    assert cfg.VLLM_ENABLE_ALIGN is True            # 离线词级时间戳默认开
+    assert cfg.VLLM_SEGMENT_GAP_MS == 500           # 离线分段词间隙阈值
 
 
 def test_parse_and_apply_vllm_args(monkeypatch):

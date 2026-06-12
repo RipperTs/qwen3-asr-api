@@ -64,6 +64,8 @@ LEGACY_DEFAULTS = {
     "vllm_max_utterance_sec": None,
     "vllm_concurrency": None,
     "vllm_end_silence_ms": None,
+    "vllm_enable_align": None,
+    "vllm_segment_gap_ms": None,
 }
 
 
