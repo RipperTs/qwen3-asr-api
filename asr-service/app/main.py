@@ -12,14 +12,24 @@ from app.utils.arg_schema import build_parser, ARG_SPECS, resolve_help_lang
 from app.utils.config_file import merge_runtime_config, run_config_update
 import app.config as cfg
 from app.runtime.device import detect_device, resolve_device, auto_select_model_size, should_disable_align
-from app.runtime.task_manager import TaskManager
-from app.engines.qwen_asr_engine import QwenASREngine
-from app.engines.vad_engine import VADEngine
-from app.engines.punc_engine import PuncEngine
-from app.pipeline.audio_preprocessor import check_ffmpeg
-from app.pipeline.asr_pipeline import ASRPipeline
-from app.api.routes import init_routes, build_offline_router
 from app.api.common_routes import init_common, build_common_router
+# standard 专属重型依赖（funasr/transformers/OpenVINO 系引擎、离线管线/路由）容错导入：
+# vLLM 专用环境（无 funasr）下置为 None，使 app.main 仍可被 uvicorn factory 加载启动
+# vllm 模式；_assemble_standard 调用时若缺失则明确报错退出。保留为模块级名以便测试替身。
+try:
+    from app.runtime.task_manager import TaskManager
+    from app.engines.qwen_asr_engine import QwenASREngine
+    from app.engines.vad_engine import VADEngine
+    from app.engines.punc_engine import PuncEngine
+    from app.pipeline.audio_preprocessor import check_ffmpeg
+    from app.pipeline.asr_pipeline import ASRPipeline
+    from app.api.routes import init_routes, build_offline_router
+    _STANDARD_DEPS_OK = True
+except ImportError as _std_imp_err:      # vLLM 环境缺 funasr 等 standard 依赖
+    TaskManager = QwenASREngine = VADEngine = PuncEngine = None
+    check_ffmpeg = ASRPipeline = init_routes = build_offline_router = None
+    _STANDARD_DEPS_OK = False
+    _STANDARD_DEPS_ERR = _std_imp_err
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +129,19 @@ def _apply_cli_config(args):
         cfg.STREAM_ENERGY_FLOOR_DBFS = args.stream_energy_floor_dbfs
     if getattr(args, "stream_snr_min_db", None) is not None:
         cfg.STREAM_SNR_MIN_DB = args.stream_snr_min_db
+    # vLLM（路线 A）
+    if getattr(args, "gpu_memory_utilization", None) is not None:
+        cfg.VLLM_GPU_MEMORY_UTILIZATION = args.gpu_memory_utilization
+    if getattr(args, "vllm_max_model_len", None) is not None:
+        cfg.VLLM_MAX_MODEL_LEN = args.vllm_max_model_len
+    if getattr(args, "vllm_chunk_size_sec", None) is not None:
+        cfg.VLLM_CHUNK_SIZE_SEC = args.vllm_chunk_size_sec
+    if getattr(args, "vllm_max_utterance_sec", None) is not None:
+        cfg.VLLM_MAX_UTTERANCE_SEC = args.vllm_max_utterance_sec
+    if getattr(args, "vllm_concurrency", None) is not None:
+        cfg.VLLM_CONCURRENCY = args.vllm_concurrency
+    if getattr(args, "vllm_end_silence_ms", None) is not None:
+        cfg.VLLM_END_SILENCE_MS = args.vllm_end_silence_ms
     cfg.ENABLE_SPEAKER = getattr(args, "enable_speaker", False)
     if getattr(args, "speaker_threshold", None) is not None:
         cfg.SPEAKER_THRESHOLD = args.speaker_threshold
@@ -204,6 +227,12 @@ def _mount_root(app: FastAPI) -> None:
 def _assemble_standard(app: FastAPI, args) -> None:
     """standard 模式：transformers/OpenVINO 离线引擎 + 离线接口(v1/v2) + 共性接口。
     实时 Route B 的挂载在 T09 接通（见下方 TODO）。"""
+    if not _STANDARD_DEPS_OK:
+        logger.critical(
+            f"standard 模式依赖缺失（{_STANDARD_DEPS_ERR}）。当前疑为 vLLM 专用环境，"
+            "请用 --serve-mode vllm，或在完整环境（含 funasr 等）运行 standard 模式。")
+        sys.exit(1)
+
     # ffmpeg（离线格式转换依赖）
     check_ffmpeg()
     logger.info("ffmpeg 检测通过")
@@ -516,28 +545,59 @@ def _assemble_standard(app: FastAPI, args) -> None:
 
 
 def _assemble_vllm(app: FastAPI, args) -> None:
-    """vllm 模式占位（Phase 3 启用）：仅挂共性接口，不加载 transformers/OpenVINO 引擎。
+    """vllm 模式（路线 A）：vLLM 原生流式引擎 + 统一实时端点 WS /v2/asr/stream + 共性接口。
 
-    vLLM 原生流式（路线 A）的引擎与实时端点将在 Phase 3（T12/T13）接入；
-    当前仅通过 /health、/capabilities 暴露模式与"未启用"能力。
+    仅提供流式转写；不挂离线/transformers/OpenVINO/TaskManager/兼容桥（D5）。
+    断句用能量端点器（无 funasr）。要求 CUDA 设备；进程内同步 vLLM，须 uvicorn workers=1。
     """
-    logger.warning(
-        "serve-mode=vllm：vLLM 原生流式为 Phase 3 功能，当前未启用。"
-        "本模式仅提供 /health 与 /capabilities；实时端点将在 Phase 3 接入。"
-        "如需离线/实时(路线B)功能，请使用 --serve-mode standard。"
-    )
-
     device_info = detect_device()
     device = resolve_device(args.device, device_info=device_info)
+    if device != "cuda":
+        logger.critical(
+            f"serve-mode=vllm 需要 CUDA 设备，当前解析为 {device}。"
+            "vLLM 原生流式仅支持 GPU；如需 CPU/离线请用 --serve-mode standard。")
+        sys.exit(1)
+    vram_gb = device_info.get("vram_gb")
+    model_size = args.model_size or auto_select_model_size(vram_gb)
+
+    # 惰性导入：vLLM / qwen-asr[vllm] 仅 vllm 模式加载；standard / CPU 不依赖
+    from app.engines.vllm_asr_engine import VLLMASREngine
+    from app.runtime.vllm_stream_session import VllmStreamBackend
+    from app.api.ws_routes import ws_router_stream, init_ws_stream
+
+    engine = VLLMASREngine(
+        model_size=model_size,
+        gpu_memory_utilization=cfg.VLLM_GPU_MEMORY_UTILIZATION,
+        max_model_len=cfg.VLLM_MAX_MODEL_LEN,
+        chunk_size_sec=cfg.VLLM_CHUNK_SIZE_SEC,
+        unfixed_chunk_num=cfg.VLLM_UNFIXED_CHUNK_NUM,
+        unfixed_token_num=cfg.VLLM_UNFIXED_TOKEN_NUM,
+    )
+    try:
+        engine.load()
+    except Exception as e:
+        logger.critical(f"vLLM 引擎加载失败: {e}", exc_info=True)
+        sys.exit(1)
+
+    stream_backend = VllmStreamBackend(
+        engine,
+        max_sessions=cfg.MAX_STREAM_SESSIONS,
+        concurrency=cfg.VLLM_CONCURRENCY,
+        max_utterance_sec=cfg.VLLM_MAX_UTTERANCE_SEC,
+        energy_floor_dbfs=cfg.VLLM_ENERGY_FLOOR_DBFS,
+        end_silence_ms=cfg.VLLM_END_SILENCE_MS,
+    )
+    init_ws_stream(stream_backend)
+    app.include_router(ws_router_stream)
 
     capabilities = {
         "mode": "vllm",
         "offline_api": False,
         "stream": {
-            "enabled": False,          # Phase 3 接入后置位
+            "enabled": True,
             "backend": "vllm-native",
-            "path": None,
-            "partial_results": False,
+            "path": "/v2/asr/stream",
+            "partial_results": True,
             "word_timestamps": False,
         },
     }
@@ -545,6 +605,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         "status": "ready",
         "mode": "vllm",
         "device": device,
+        "model_size": model_size,
+        "asr_backend": "vllm",
         "config_file": cfg.CONFIG_FILE,
         "capabilities": capabilities,
     }
@@ -552,6 +614,15 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     init_common(service_info)
     app.include_router(build_common_router("/v1"))
     app.include_router(build_common_router("/v2"))
+
+    @app.on_event("shutdown")
+    def _on_vllm_shutdown():
+        logger.info("收到终止信号，正在关闭 vLLM 实时后端...")
+        stream_backend.shutdown()
+        logger.info("Qwen3-ASR Service (vllm) 已安全退出")
+
+    logger.info(f"运行模式: {service_info}")
+    logger.info("实时转写已启用：WS /v2/asr/stream（路线A / vllm-native，含 partial）")
 
 
 app = None

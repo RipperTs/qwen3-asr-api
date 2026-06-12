@@ -57,17 +57,37 @@ def isolated_create_app(tmp_path, monkeypatch):
         setattr(cfg, k, v)
 
 
-def test_vllm_mode_mounts_common_only(isolated_create_app):
-    from app.main import create_app
+def _mock_vllm_engine(monkeypatch):
+    """mock vllm 引擎与设备，避免真实 GPU / vLLM 加载（体例同 standard 重引擎 mock）。"""
+    import app.main as main
+    monkeypatch.setattr(main, "detect_device",
+                        lambda: {"type": "cuda", "vram_gb": 24.0, "name": "FakeGPU"})
+    monkeypatch.setattr(main, "resolve_device", lambda req, device_info=None: "cuda")
 
-    app = create_app(_args(serve_mode="vllm", device="cpu"))
+    class FakeVLLMEngine:
+        def __init__(self, *a, **k): pass
+        def load(self): pass
+
+    monkeypatch.setattr("app.engines.vllm_asr_engine.VLLMASREngine", FakeVLLMEngine)
+
+
+def test_vllm_mode_mounts_stream_and_common(isolated_create_app, monkeypatch):
+    import app.main as main
+    _mock_vllm_engine(monkeypatch)
+
+    app = main.create_app(_args(serve_mode="vllm", device="auto"))
     client = TestClient(app)
 
-    # health 反映 vllm 模式
+    # health 反映 vllm 模式 + 流式已启用（路线 A，含 partial）
     health = client.get("/v1/health").json()
     assert health["mode"] == "vllm"
     assert health["capabilities"]["offline_api"] is False
-    assert health["capabilities"]["stream"]["backend"] == "vllm-native"
+    stream = health["capabilities"]["stream"]
+    assert stream["backend"] == "vllm-native"
+    assert stream["enabled"] is True
+    assert stream["partial_results"] is True
+    assert stream["word_timestamps"] is False
+    assert stream["path"] == "/v2/asr/stream"
 
     # capabilities 在 v1/v2 都可用
     assert client.get("/v1/capabilities").json()["mode"] == "vllm"
@@ -77,6 +97,23 @@ def test_vllm_mode_mounts_common_only(isolated_create_app):
     assert client.get("/v1/tasks").status_code == 404
     assert client.get("/v2/tasks").status_code == 404
     assert client.post("/v1/asr", files={"file": ("a.wav", b"x", "audio/wav")}).status_code == 404
+
+    # 实时端点已挂载：连接即收到 session.created（vllm-native，含 partial）
+    with client.websocket_connect("/v2/asr/stream") as ws:
+        created = ws.receive_json()
+        assert created["type"] == "session.created"
+        assert created["mode"] == "vllm"
+        assert created["backend"] == "vllm-native"
+        assert created["capabilities"]["partial_results"] is True
+
+
+def test_vllm_mode_requires_cuda(isolated_create_app, monkeypatch):
+    """vllm 模式非 CUDA 设备明确退出（不静默降级到 CPU）。"""
+    import app.main as main
+    monkeypatch.setattr(main, "detect_device", lambda: {"type": "cpu", "vram_gb": None, "name": "cpu"})
+    monkeypatch.setattr(main, "resolve_device", lambda req, device_info=None: "cpu")
+    with pytest.raises(SystemExit):
+        main.create_app(_args(serve_mode="vllm", device="cpu"))
 
 
 # ─── T09: 实时配置与启动参数 ───
@@ -183,15 +220,54 @@ def test_parse_args_stream_flags(monkeypatch):
 
 
 def test_health_echoes_config_file(isolated_create_app, monkeypatch):
-    """/health 回显本次生效的配置文件名（防"幽灵配置"，vllm 占位分支即可覆盖）。"""
+    """/health 回显本次生效的配置文件名（防"幽灵配置"，vllm 分支即可覆盖）。"""
     import app.config as cfg
-    from app.main import create_app
+    import app.main as main
 
+    _mock_vllm_engine(monkeypatch)
     monkeypatch.setattr(cfg, "CONFIG_FILE", "config.yaml")
-    app = create_app(_args(serve_mode="vllm", device="cpu"))
+    app = main.create_app(_args(serve_mode="vllm", device="auto"))
     client = TestClient(app)
     assert client.get("/v1/health").json()["config_file"] == "config.yaml"
     assert client.get("/v2/health").json()["config_file"] == "config.yaml"
+
+
+def test_config_vllm_defaults():
+    import app.config as cfg
+    assert cfg.VLLM_GPU_MEMORY_UTILIZATION == 0.8
+    assert cfg.VLLM_MAX_MODEL_LEN is None
+    assert cfg.VLLM_CHUNK_SIZE_SEC == 1.0       # V0 实测定档（细腻 partial）
+    assert cfg.VLLM_CONCURRENCY == 1            # generate 串行，>1 无吞吐收益
+    assert cfg.VLLM_MAX_UTTERANCE_SEC == 20
+    assert cfg.VLLM_ENERGY_FLOOR_DBFS == -45.0
+    assert cfg.VLLM_END_SILENCE_MS == 800
+
+
+def test_parse_and_apply_vllm_args(monkeypatch):
+    import app.config as cfg
+    from app.main import _apply_cli_config, parse_args
+    monkeypatch.setattr("sys.argv", [
+        "prog", "--no-config", "--serve-mode", "vllm",
+        "--gpu-memory-utilization", "0.7", "--vllm-chunk-size-sec", "1.5",
+        "--vllm-max-utterance-sec", "30", "--vllm-concurrency", "2",
+        "--vllm-end-silence-ms", "600",
+    ])
+    saved = {k: getattr(cfg, k) for k in (
+        "VLLM_GPU_MEMORY_UTILIZATION", "VLLM_CHUNK_SIZE_SEC", "VLLM_MAX_UTTERANCE_SEC",
+        "VLLM_CONCURRENCY", "VLLM_END_SILENCE_MS", "MODEL_SOURCE", "MAX_SEGMENT_DURATION",
+        "SERVE_MODE", "ENABLE_STREAM")}
+    try:
+        ns = parse_args()
+        assert ns.serve_mode == "vllm"
+        _apply_cli_config(ns)
+        assert cfg.VLLM_GPU_MEMORY_UTILIZATION == 0.7
+        assert cfg.VLLM_CHUNK_SIZE_SEC == 1.5
+        assert cfg.VLLM_MAX_UTTERANCE_SEC == 30
+        assert cfg.VLLM_CONCURRENCY == 2
+        assert cfg.VLLM_END_SILENCE_MS == 600
+    finally:
+        for k, v in saved.items():
+            setattr(cfg, k, v)
 
 
 def test_apply_cli_config_writes_stream(monkeypatch):

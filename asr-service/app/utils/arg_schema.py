@@ -172,6 +172,45 @@ ARG_SPECS = (
                 "noise floor; <=0 disables (default: 6.0)",
     ),
     ArgSpec(
+        key="gpu_memory_utilization", flags=("--gpu-memory-utilization",),
+        default=None, type=float, group="vLLM",
+        help=f"vLLM 显存占用率 (default: {cfg.VLLM_GPU_MEMORY_UTILIZATION})",
+        help_en=f"vLLM GPU memory utilization (default: {cfg.VLLM_GPU_MEMORY_UTILIZATION})",
+    ),
+    ArgSpec(
+        key="vllm_max_model_len", flags=("--vllm-max-model-len",),
+        default=None, type=int, group="vLLM",
+        help="vLLM 最大上下文长度，下调省 KV cache 显存 (default: 模型默认)",
+        help_en="vLLM max context length; lower to save KV cache memory (default: model default)",
+    ),
+    ArgSpec(
+        key="vllm_chunk_size_sec", flags=("--vllm-chunk-size-sec",),
+        default=None, type=float, group="vLLM",
+        help=f"流式解码块大小（秒），越小 partial 越细腻 (default: {cfg.VLLM_CHUNK_SIZE_SEC})",
+        help_en=f"Streaming decode chunk size (sec); smaller = finer partials "
+                f"(default: {cfg.VLLM_CHUNK_SIZE_SEC})",
+    ),
+    ArgSpec(
+        key="vllm_max_utterance_sec", flags=("--vllm-max-utterance-sec",),
+        default=None, type=int, group="vLLM",
+        help=f"单句兜底切分（秒），约束上下文/显存增长 (default: {cfg.VLLM_MAX_UTTERANCE_SEC})",
+        help_en=f"Per-utterance hard cut (sec); bounds context/memory growth "
+                f"(default: {cfg.VLLM_MAX_UTTERANCE_SEC})",
+    ),
+    ArgSpec(
+        key="vllm_concurrency", flags=("--vllm-concurrency",),
+        default=None, type=int, group="vLLM",
+        help=f"同时解码会话数（generate 串行，>1 无吞吐收益）(default: {cfg.VLLM_CONCURRENCY})",
+        help_en=f"Concurrent decoding sessions (generate is serial; >1 yields no throughput) "
+                f"(default: {cfg.VLLM_CONCURRENCY})",
+    ),
+    ArgSpec(
+        key="vllm_end_silence_ms", flags=("--vllm-end-silence-ms",),
+        default=None, type=int, group="vLLM",
+        help=f"能量端点尾静音判停（ms）(default: {cfg.VLLM_END_SILENCE_MS})",
+        help_en=f"Energy endpointer end-silence threshold (ms) (default: {cfg.VLLM_END_SILENCE_MS})",
+    ),
+    ArgSpec(
         key="enable_task_store", flags=("--enable-task-store",), default=False, type=bool,
         group="离线任务",
         help="离线任务持久化（data/tasks.db）：结果跨重启可查",
