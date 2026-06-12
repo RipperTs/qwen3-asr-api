@@ -10,9 +10,13 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # 仅补 qwen-asr 与服务依赖（不含 torch/funasr/openvino/onnxruntime）；
-# requirements-vllm.txt 变更时重建此层
+# requirements-vllm.txt 变更时重建此层。
+# 先以 --ignore-installed 覆盖基底镜像中系统(distutils)装的 blinker——qwen-asr→flask
+# 要求 blinker>=1.9，而 pip 无法卸载系统装的 blinker 1.4；预装 pip 托管版即可让主安装
+# 满足依赖、规避 uninstall-distutils-installed-package 失败（不触及 torch/vllm）。
 COPY asr-service/requirements-vllm.txt /app/requirements-vllm.txt
-RUN pip install --no-cache-dir -r /app/requirements-vllm.txt
+RUN pip install --no-cache-dir --ignore-installed blinker \
+    && pip install --no-cache-dir -r /app/requirements-vllm.txt
 
 # 镜像版本号（CI 按 git tag 注入，本地默认 dev）；置于依赖层后，避免版本变更使 pip 缓存失效
 ARG APP_VERSION=dev
