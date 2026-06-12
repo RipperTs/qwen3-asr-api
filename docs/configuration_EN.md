@@ -115,6 +115,15 @@ Effective only in vllm mode; requires a CUDA GPU and an isolated environment/ima
 | `--vllm-infer-batch-size` | number | `4` | Audio chunks per alignment/ASR batch (chunks ≤180s); `-1`=all at once (long-audio aligner OOM from stacked activations), lower to save VRAM, drop to `1` if long audio still OOMs |
 | `--vllm-segment-gap-ms` | ms | `500` | Offline segmentation: split when the inter-word gap exceeds this (no FSMN; word-gap proxy) |
 
+**Config-file only (no CLI; set in `config.yaml`):**
+
+| Config key | Default | Description |
+|------------|---------|-------------|
+| `vllm_unfixed_chunk_num` | `2` | Number of leading streaming chunks that don't take history as prefix (cold-start stability) |
+| `vllm_unfixed_token_num` | `5` | After the leading chunks, roll back the last K tokens as prefix (reduces jitter) |
+| `vllm_energy_floor_dbfs` | `-45.0` | Streaming energy-endpoint gate (dBFS); above this counts as speech / sentence start |
+| `vllm_offline_chunk_sec` | `180` | Offline chunk-by-chunk transcription chunk length (sec); lower = finer progress, lower peak VRAM (see [Long audio & progress](#vllm-native-streaming-mode-route-a) below) |
+
 ### Config-file Meta Parameters
 
 | Parameter | Description |

@@ -181,6 +181,8 @@ bash docker/build.sh   # 选择 "4) vLLM"
 >
 > ⚠️ **长音频对齐 OOM**：ForcedAligner 在主进程加载，显存**不计入 `--gpu-memory-utilization`**（该参数只约束 vLLM EngineCore 子进程）。`transcribe` 内部按 ≤180s 切块，但默认把一个文件的**全部块一次性**喂对齐器前向——长音频（如 30 分钟）激活叠加报 `CUDA out of memory`（短音频只 1 块、不受影响）。对策（按推荐序）：① `--vllm-infer-batch-size`（默认已改为 4）逐批对齐、峰值显存随批大小下降，长音频仍 OOM 则降到 1；② `--vllm-align-device cpu`（对齐器移 CPU，无 GPU 争用，较慢）；③ 降 `--gpu-memory-utilization` 留更多余量；④ `--no-vllm-align`。详见[配置文档](configuration.md#vllm-原生流式模式路线-a)。
 
+> **兼容接口（OpenAI/DashScope）与离线说话人**：vLLM 模式同样支持 `--enable-openai-api`/`--enable-dashscope-api`（离线 + 实时 WS）与 `--enable-speaker`/`--enable-speaker-db`（离线说话人分离/识别，CAM++，语音区间用能量 VAD，弱于 standard 的 FSMN）。与 standard 的关键差异——vLLM 流式恒开，**实时兼容随兼容开关自动挂载、无需 `--enable-stream`**，且实时支持逐字增量（DashScope 中间结果干净直发 / OpenAI delta best-effort）。本地启动用独立环境（非默认 venv）：`venv-vllm/bin/python -m app.main --serve-mode vllm …`（Docker 已由上面的 compose 封装；vLLM 必 CUDA，非 GPU 设备直接退出）。能力与协议详见[兼容接口文档](api/compat.md)。
+
 #### vLLM 启动日志说明（常见现象，非故障）
 
 vLLM 模式启动/退出时，日志里会出现两条看似报错、实则**无害**的信息，可放心忽略：
