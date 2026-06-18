@@ -12,6 +12,8 @@
 
 A simple, fast and efficient speech recognition API service based on Qwen3-ASR. Out-of-the-box, with offline long-form and real-time streaming transcription in one, speaker diarization / voiceprint identification, and a feature-rich, polished Web UI. Cross-platform on Linux / macOS / Windows with Docker container deployment, and dual-mode inference on GPU (CUDA) and CPU (OpenVINO INT8).
 
+一个基于 Qwen3-ASR 的简单、快速、高效的语音识别 API 服务。开箱即用，集离线长音频转写与实时流式转写于一体，支持说话人分离 / 声纹识别，并配备功能丰富、精致的 Web UI。跨平台支持 Linux / macOS / Windows 及 Docker 容器化部署，同时提供 GPU（CUDA）与 CPU（OpenVINO INT8）双模式推理。
+
 ## Features
 
 - ⚡ **Fast startup, fast transcription** - The service starts quickly; long-audio transcription takes far less time than the audio duration — especially on GPU, while CPU mode stays efficient thanks to OpenVINO INT8 quantization
