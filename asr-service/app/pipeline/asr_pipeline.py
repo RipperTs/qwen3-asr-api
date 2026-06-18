@@ -1,6 +1,7 @@
 import os
 import shutil
 import logging
+import numpy as np
 import soundfile as sf
 
 from app.engines.vad_engine import VADEngine
@@ -427,6 +428,34 @@ class ASRPipeline:
         merged.append((group_start, group_end))
         return merged
 
+    @staticmethod
+    def _find_quiet_cut(data, sr, target, window, frame_ms=20, dip_ratio=0.5):
+        """在 [target-window, target+window] 内找最安静帧作为切点（落在停顿中点）。
+
+        无明显停顿（区域能量平坦/静音）时回退到名义切点 target，保持确定性。
+        返回样本下标。
+        """
+        lo = max(0, int(target - window))
+        hi = min(len(data), int(target + window))
+        if hi - lo < int(0.1 * sr):
+            return target
+        fr = max(1, int(frame_ms / 1000 * sr))
+        region = data[lo:hi]
+        n = (len(region) - fr) // fr + 1
+        if n <= 0:
+            return target
+        rms = np.empty(n, dtype=np.float64)
+        for i in range(n):
+            f = region[i * fr:i * fr + fr]
+            rms[i] = float(np.sqrt(np.mean(np.square(f, dtype=np.float64)))) if len(f) else 0.0
+        med = float(np.median(rms))
+        if med <= 1e-6:                       # 平坦/静音 → 名义切点（确定性，单测可控）
+            return target
+        k = int(np.argmin(rms))
+        if rms[k] < dip_ratio * med:          # 存在明显能量低谷（停顿）→ 谷中点下刀
+            return lo + k * fr + fr // 2
+        return target
+
     def _split_segments_to_chunks(
         self,
         wav_path: str,
@@ -435,18 +464,27 @@ class ASRPipeline:
         max_segment_sec: float | None = None,
     ) -> list[dict]:
         """
-        合并相邻 VAD 段后切分音频，超长段二次切分。max_segment_sec 缺省=cfg。
+        合并相邻 VAD 段后切分音频，超长「连续语音段」在最安静处二次切分。
+
+        两个阈值解耦（关键）：
+        - 合并跨度上限 merge_max（=max_segment_sec 或 MAX_SEGMENT_DURATION）：相邻 VAD 段
+          的合并发生在静音间隙处，安全。
+        - 强制二次切分阈值 force_max（=max_segment_sec 或 MAX_ASR_CHUNK_DURATION）：仅当
+          「单个连续语音段」超过此值才切，且切在最安静处（停顿），避免把连续语句切在词中
+          间导致边界词重复识别/漏字。force_max 远大于 merge_max，故大多数连续语句整段送 ASR。
 
         返回:
             [{"path": str, "offset_sec": float, "duration_sec": float}, ...]
         """
         data, sr = sf.read(wav_path)
-        eff_max = max_segment_sec or cfg.MAX_SEGMENT_DURATION
+        merge_max = max_segment_sec or cfg.MAX_SEGMENT_DURATION
+        force_max = max_segment_sec or cfg.MAX_ASR_CHUNK_DURATION
 
-        # 先合并碎片段
-        merged = self._merge_vad_segments(vad_segments, eff_max)
+        # 先合并碎片段（仅在静音间隙处合并）
+        merged = self._merge_vad_segments(vad_segments, merge_max)
         logger.info(
-            f"VAD 段合并: {len(vad_segments)} -> {len(merged)} (阈值={eff_max}s)"
+            f"VAD 段合并: {len(vad_segments)} -> {len(merged)} "
+            f"(合并阈值={merge_max}s, 强制切分阈值={force_max}s)"
         )
 
         chunks = []
@@ -458,7 +496,7 @@ class ASRPipeline:
             segment_data = data[start_sample:end_sample]
             segment_duration = len(segment_data) / sr
 
-            if segment_duration <= eff_max:
+            if segment_duration <= force_max:
                 chunk_path = os.path.join(chunk_dir, f"chunk_{idx:04d}.wav")
                 sf.write(chunk_path, segment_data, sr)
                 chunks.append({
@@ -468,11 +506,18 @@ class ASRPipeline:
                 })
                 idx += 1
             else:
-                # 单段超长（理论上合并后不会出现，但作为兜底）
-                sub_samples = int(eff_max * sr)
+                # 单段连续语音超长：在最安静处下刀（无明显停顿则回退到名义切点）
+                sub_samples = int(force_max * sr)
+                window = int(min(force_max * 0.5, 2.5) * sr)
                 offset = 0
                 while offset < len(segment_data):
-                    end = min(offset + sub_samples, len(segment_data))
+                    if len(segment_data) - offset <= sub_samples + window:
+                        end = len(segment_data)              # 末块到结尾，免切出过短尾巴
+                    else:
+                        end = self._find_quiet_cut(
+                            segment_data, sr, offset + sub_samples, window)
+                        if end <= offset:
+                            end = min(offset + sub_samples, len(segment_data))
                     sub_data = segment_data[offset:end]
                     chunk_path = os.path.join(chunk_dir, f"chunk_{idx:04d}.wav")
                     sf.write(chunk_path, sub_data, sr)

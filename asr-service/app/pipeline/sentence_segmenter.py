@@ -28,11 +28,19 @@ _FAIL_MARK = "[识别失败]"
 
 
 def segment_sentences(chunks, *, max_segment=None,
-                      long_pause_ms=None, short_pause_ms=None):
-    """把 ASR 处理块重组为句子级 segments。max_segment 为 None/0 时不按时长切。"""
+                      long_pause_ms=None, short_pause_ms=None, dedupe=True):
+    """把 ASR 处理块重组为句子级 segments。max_segment 为 None/0 时不按时长切。
+
+    dedupe=True 时先去除"处理块被拦腰切断"导致的边界重复识别（仅作用于紧邻块边界，
+    见 dedupe_contiguous_boundaries）。
+    """
     chunks = [c for c in chunks if (c.get("text") or "").strip()]
     if not chunks:
         return []
+    if dedupe:
+        chunks = dedupe_contiguous_boundaries(chunks)
+        if not chunks:
+            return []
     long_pause = (cfg.SENTENCE_LONG_PAUSE_MS if long_pause_ms is None else long_pause_ms) / 1000.0
     short_pause = (cfg.SENTENCE_SHORT_PAUSE_MS if short_pause_ms is None else short_pause_ms) / 1000.0
 
@@ -111,6 +119,60 @@ def segment_sentences(chunks, *, max_segment=None,
             seg["speaker"] = s["speaker"]
         out.append(seg)
     return out
+
+
+# ─── 边界重复去重（处理块被拦腰切断的产物）────────────────────────────
+
+def dedupe_contiguous_boundaries(chunks, *, gap_eps=0.05, min_overlap=2, max_overlap=20):
+    """去除"长语音被时长切块拦腰切断"造成的边界重复识别。
+
+    长于 MAX_SEGMENT_DURATION 的连续语音会被按时长切成多个"紧邻块"（块间间隙≈0）；
+    切点落在词中时，边界词常被两侧各识别一次（如 "…面前。" + "面前，…"）。
+    本函数仅在紧邻块（gap<=gap_eps）边界上，把前一块尾部与后一块头部重复的"内容字串"
+    （>=min_overlap 个 isalnum 字符，精确匹配）从前一块尾部连同其后随标点一并删除。
+
+    只作用于紧邻（时长切块）边界——真正连续重复的口语（"对对对"）通常在同一块内，或跨越
+    VAD 静音间隙（gap>0），不会被误删。
+    """
+    out = [dict(c) for c in chunks]
+    for i in range(len(out) - 1):
+        a, b = out[i], out[i + 1]
+        if not (a.get("text") and b.get("text")):
+            continue
+        if float(b["start"]) - float(a["end"]) > gap_eps:
+            continue                                   # 仅紧邻（时长切块）边界
+        overlap = _boundary_overlap(a["text"], b["text"], min_overlap, max_overlap)
+        if overlap:
+            _trim_tail_content(a, overlap)             # 删前块尾重复 + 其后随标点
+    return [c for c in out if (c.get("text") or "").strip()]
+
+
+def _boundary_overlap(a_text, b_text, min_overlap, max_overlap):
+    """前块尾内容字串 == 后块头内容字串 的最长长度（内容字符数）；不足 min_overlap 返回 0。"""
+    a_core = [ch for ch in a_text if ch.isalnum()]
+    b_core = [ch for ch in b_text if ch.isalnum()]
+    hi = min(len(a_core), len(b_core), max_overlap)
+    for L in range(hi, min_overlap - 1, -1):
+        if a_core[len(a_core) - L:] == b_core[:L]:
+            return L
+    return 0
+
+
+def _trim_tail_content(chunk, n_content):
+    """从块尾删除最后 n_content 个内容字符及其后随标点；词级时间戳同步裁剪。"""
+    text = chunk["text"]
+    idx = [k for k, ch in enumerate(text) if ch.isalnum()]
+    keep_upto = 0 if n_content >= len(idx) else idx[len(idx) - n_content]
+    chunk["text"] = text[:keep_upto].rstrip()
+    words = chunk.get("words")
+    if words:
+        kept, removed = list(words), 0
+        while kept and removed < n_content:
+            w = kept.pop()
+            removed += sum(1 for ch in w.get("text", "") if ch.isalnum()) or 1
+        chunk["words"] = kept or None
+        if kept:
+            chunk["end"] = max(w["end"] for w in kept)
 
 
 def _chunk_end_is_hard(piece, chunk, nxt, speaker, long_pause, short_pause):

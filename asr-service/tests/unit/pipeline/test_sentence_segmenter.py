@@ -8,6 +8,7 @@ import pytest
 
 from app.pipeline.sentence_segmenter import (
     segment_sentences,
+    dedupe_contiguous_boundaries,
     _is_sentence_end_at,
     _is_english_period_end,
 )
@@ -161,3 +162,54 @@ def test_failure_mark_isolated():
 def test_empty_and_blank_input():
     assert segment_sentences([]) == []
     assert segment_sentences([{"start": 0, "end": 1, "text": "   "}]) == []
+
+
+# ─── 边界重复去重（处理块拦腰切断的产物）──────────────────────────────
+
+def test_boundary_dedupe_removes_repeated_word():
+    # 截图问题：长语音被 5s 时长切块，边界词"面前"被两侧各识别一次
+    chunks = [{"start": 0.0, "end": 5.0, "text": "但是这些字如果摆在你们面前。"},
+              {"start": 5.0, "end": 8.0, "text": "面前，你们很容易认出来。"}]
+    deduped = dedupe_contiguous_boundaries(chunks)
+    assert deduped[0]["text"] == "但是这些字如果摆在你们"
+    assert deduped[1]["text"] == "面前，你们很容易认出来。"
+    # 端到端：重组为一句且无重复
+    segs = segment_sentences(chunks)
+    assert [s["text"] for s in segs] == ["但是这些字如果摆在你们面前，你们很容易认出来。"]
+
+
+def test_boundary_dedupe_skipped_across_real_gap():
+    # 有静音间隙（VAD 边界）→ 不是时长切块产物 → 不去重，保留口语重复
+    chunks = [{"start": 0.0, "end": 5.0, "text": "好的面前。"},
+              {"start": 5.6, "end": 8.0, "text": "面前再说。"}]   # gap 0.6s
+    deduped = dedupe_contiguous_boundaries(chunks)
+    assert [c["text"] for c in deduped] == ["好的面前。", "面前再说。"]
+
+
+def test_boundary_dedupe_ignores_single_char_overlap():
+    # 单字重叠（"没"/"没有"）不去重，避免误删合法内容
+    chunks = [{"start": 0.0, "end": 2.0, "text": "现在还没。"},
+              {"start": 2.0, "end": 4.0, "text": "没有人认出"}]
+    deduped = dedupe_contiguous_boundaries(chunks)
+    assert [c["text"] for c in deduped] == ["现在还没。", "没有人认出"]
+
+
+def test_boundary_dedupe_trims_words():
+    chunks = [
+        {"start": 0.0, "end": 4.0, "text": "摆在面前",
+         "words": [_w("摆", 0, 1), _w("在", 1, 2), _w("面", 2, 3), _w("前", 3, 4)]},
+        {"start": 4.0, "end": 8.0, "text": "面前你们",
+         "words": [_w("面", 4, 5), _w("前", 5, 6), _w("你", 6, 7), _w("们", 7, 8)]},
+    ]
+    deduped = dedupe_contiguous_boundaries(chunks)
+    assert deduped[0]["text"] == "摆在"
+    assert [w["text"] for w in deduped[0]["words"]] == ["摆", "在"]
+    assert deduped[0]["end"] == 2          # end 同步回退到保留词
+    assert deduped[1]["text"] == "面前你们"
+
+
+def test_boundary_dedupe_drops_fully_duplicated_chunk():
+    chunks = [{"start": 0.0, "end": 3.0, "text": "好的"},
+              {"start": 3.0, "end": 6.0, "text": "好的我明白。"}]
+    deduped = dedupe_contiguous_boundaries(chunks)
+    assert [c["text"] for c in deduped] == ["好的我明白。"]
