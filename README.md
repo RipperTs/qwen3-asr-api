@@ -30,6 +30,7 @@ A simple, fast and efficient speech recognition API service based on Qwen3-ASR. 
 - **Long Audio Support** - Audio files from 1s to 4 hours with automatic VAD segmentation
 - **Multi-format Support** - WAV / MP3 / FLAC / M4A / AAC / OGG and more
 - **Timestamps** - Sentence-level / word-level timestamps (GPU mode)
+- **Accurate Sentence Segmentation** *(new in v2.2.0)* - Sentences reassembled by punctuation, pause and speaker change, decoupled from processing-chunk duration (no fixed-length mid-sentence cuts)
 - **Auto Punctuation** - Integrated CT-Transformer punctuation restoration model
 - **API Authentication** - Optional Bearer Token authentication
 - **Interactive Management** - CLI management script supporting Docker / venv dual-mode management
