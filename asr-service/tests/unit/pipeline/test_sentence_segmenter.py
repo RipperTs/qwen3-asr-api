@@ -167,8 +167,8 @@ def test_empty_and_blank_input():
 # ─── 边界重复去重（处理块拦腰切断的产物）──────────────────────────────
 
 def test_boundary_dedupe_removes_repeated_word():
-    # 截图问题：长语音被 5s 时长切块，边界词"面前"被两侧各识别一次
-    chunks = [{"start": 0.0, "end": 5.0, "text": "但是这些字如果摆在你们面前。"},
+    # 截图问题：长语音被 force-split 切块，边界词"面前"被两侧各识别一次（前块带 split_after）
+    chunks = [{"start": 0.0, "end": 5.0, "text": "但是这些字如果摆在你们面前。", "split_after": True},
               {"start": 5.0, "end": 8.0, "text": "面前，你们很容易认出来。"}]
     deduped = dedupe_contiguous_boundaries(chunks)
     assert deduped[0]["text"] == "但是这些字如果摆在你们"
@@ -196,7 +196,7 @@ def test_boundary_dedupe_ignores_single_char_overlap():
 
 def test_boundary_dedupe_trims_words():
     chunks = [
-        {"start": 0.0, "end": 4.0, "text": "摆在面前",
+        {"start": 0.0, "end": 4.0, "text": "摆在面前", "split_after": True,
          "words": [_w("摆", 0, 1), _w("在", 1, 2), _w("面", 2, 3), _w("前", 3, 4)]},
         {"start": 4.0, "end": 8.0, "text": "面前你们",
          "words": [_w("面", 4, 5), _w("前", 5, 6), _w("你", 6, 7), _w("们", 7, 8)]},
@@ -209,7 +209,50 @@ def test_boundary_dedupe_trims_words():
 
 
 def test_boundary_dedupe_drops_fully_duplicated_chunk():
-    chunks = [{"start": 0.0, "end": 3.0, "text": "好的"},
+    chunks = [{"start": 0.0, "end": 3.0, "text": "好的", "split_after": True},
               {"start": 3.0, "end": 6.0, "text": "好的我明白。"}]
     deduped = dedupe_contiguous_boundaries(chunks)
     assert [c["text"] for c in deduped] == ["好的我明白。"]
+
+
+def test_boundary_dedupe_requires_split_after():
+    # 修复 #1：无 split_after 标记（自然连续/重叠语音）→ 不去重，保留合法重复词
+    chunks = [{"start": 0.0, "end": 2.0, "text": "我觉得好好"},   # 无 split_after
+              {"start": 2.0, "end": 4.0, "text": "好好学习"}]
+    deduped = dedupe_contiguous_boundaries(chunks)
+    assert [c["text"] for c in deduped] == ["我觉得好好", "好好学习"]   # "好好" 不被误删
+
+
+def test_boundary_dedupe_skips_fail_mark():
+    # 修复 #2：去重不得吃掉 [识别失败] 相邻真实文本（标记字符不参与内容去重）
+    chunks = [{"start": 0.0, "end": 3.0, "text": "我们来识别", "split_after": True},
+              {"start": 3.0, "end": 4.0, "text": "[识别失败]"}]
+    deduped = dedupe_contiguous_boundaries(chunks)
+    assert [c["text"] for c in deduped] == ["我们来识别", "[识别失败]"]
+
+
+def test_segment_clamps_corrupt_word_timestamp():
+    # 修复 #3：损坏的词级 end（远超音频时长）被钳制到最后一块 end，不跑飞
+    chunk = {"start": 0.0, "end": 1.0, "text": "你好",
+             "words": [_w("你", 0.0, 0.2), _w("好", 0.2, 999.0)]}
+    segs = segment_sentences([chunk])
+    assert segs[0]["end"] <= 1.0
+
+
+def test_max_segment_time_slice_no_empty_segments():
+    # 修复 #4：短文本/长时长 + 显式 max_segment → 时间切片不产空文本段
+    segs = segment_sentences([{"start": 0.0, "end": 10.0, "text": "啊"}], max_segment=2)
+    assert all(s["text"].strip() for s in segs)
+    assert "".join(s["text"] for s in segs) == "啊"
+
+
+def test_english_abbreviation_not_split():
+    # 修复 #5：常见缩写（Mr./Dr./etc.）不被英文句点误切
+    segs = segment_sentences([{"start": 0.0, "end": 4.0, "text": "Mr. Lee left. He is gone."}])
+    assert [s["text"] for s in segs] == ["Mr. Lee left.", " He is gone."]
+
+
+def test_english_single_letter_sentence_end_splits():
+    # 修复 #6：真实单字母句末（Plan A.）应正常切句
+    segs = segment_sentences([{"start": 0.0, "end": 4.0, "text": "Plan A. Then go."}])
+    assert [s["text"] for s in segs] == ["Plan A.", " Then go."]

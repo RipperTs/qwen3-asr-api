@@ -249,7 +249,8 @@ def _segment(full_text: str, words, duration: float, max_segment) -> list:
 
     sentence_cuts = [m.end() for m in re.finditer(_SENTENCE_PUNCT, full_text)]
     if not sentence_cuts:
-        return _segment_by_word_gap(full_text, words, positions, max_seg)
+        return _clamp_segments(
+            _segment_by_word_gap(full_text, words, positions, max_seg), duration)
 
     # 句级切片；仅在显式 max_seg 时把超 max_seg 的句子在逗号处细切
     final = []
@@ -274,7 +275,21 @@ def _segment(full_text: str, words, duration: float, max_segment) -> list:
             end = start + max_seg                        # 跨块时间戳损坏 → 钳制为近似时长
         segments.append({"start": round(start, 3), "end": round(end, 3),
                          "text": text, "words": list(sw)})
+    segments = _clamp_segments(segments, duration)
     return segments or [{"start": 0.0, "end": round(float(duration), 3), "text": full_text}]
+
+
+def _clamp_segments(segments: list, duration: float) -> list:
+    """物理 sanity 上限：段 end 不超过整段时长、start 落在 [0, end]。
+
+    与"是否按时长切句"解耦——即使 max_segment 缺省也生效，钳制对齐器损坏/回退的时间戳
+    （如某词 end 远超真实音频时长），避免段落跨度跑飞。
+    """
+    d = round(float(duration), 3)
+    for s in segments:
+        s["end"] = min(round(float(s["end"]), 3), d)
+        s["start"] = max(0.0, min(round(float(s["start"]), 3), s["end"]))
+    return segments
 
 
 def _spans(lo: int, hi: int, cut_ends: list) -> list:

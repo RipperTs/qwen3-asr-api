@@ -65,6 +65,31 @@ def test_long_continuous_segment_not_split_by_default(pipe, make_wav, tmp_path):
     assert chunks[0]["duration_sec"] == pytest.approx(12.28, abs=0.05)
 
 
+def test_explicit_max_segment_keeps_force_threshold(pipe, make_wav, tmp_path):
+    # 修复 #10：显式传 max_segment（句子输出上限）不得压低 force_max（=MAX_ASR_CHUNK_DURATION=20s）
+    # → 12s 连续段仍整段送 ASR，不被词中切分
+    wav = make_wav(duration_sec=13.0)
+    chunk_dir = tmp_path / "chunks"
+    chunk_dir.mkdir()
+
+    chunks = pipe._split_segments_to_chunks(wav, [(0, 12280)], str(chunk_dir), max_segment_sec=5)
+    assert len(chunks) == 1
+    assert chunks[0]["duration_sec"] == pytest.approx(12.28, abs=0.05)
+
+
+def test_force_split_marks_split_after(pipe, make_wav, tmp_path, monkeypatch):
+    # 修复 #1：force-split 产生的非末子块带 split_after 标记（供边界去重精准定位）
+    monkeypatch.setattr("app.config.MAX_ASR_CHUNK_DURATION", 5)
+    wav = make_wav(duration_sec=9.0)
+    chunk_dir = tmp_path / "chunks"
+    chunk_dir.mkdir()
+
+    chunks = pipe._split_segments_to_chunks(wav, [(0, 8000)], str(chunk_dir))
+    assert len(chunks) == 2
+    assert chunks[0].get("split_after") is True          # 非末子块=人为切点
+    assert chunks[1].get("split_after") is False          # 末子块
+
+
 def test_quiet_cut_falls_back_on_flat_audio(pipe):
     # 静音/平坦区域无能量低谷 → 回退到名义切点（确定性）
     flat = np.zeros(16000 * 10, dtype="float32")

@@ -20,11 +20,19 @@ evolution.md §二.4 的落地：把"处理用的 ASR 切块（受 MAX_SEGMENT_D
 
 输出句子级 segments（同形），其中 start/end 为绝对秒，words/speaker 视有无透传。
 """
+import math
+
 from app import config as cfg
 
 _SENTENCE_PUNCT = "。！？!?;；"   # 句末标点（中英）
 _CLAUSE_PUNCT = "，,、"          # 子句标点（超长句弱切点）
 _FAIL_MARK = "[识别失败]"
+
+# 常见英文缩写（小写）：句点前 token 命中时不视为句末，避免 Mr./Dr./etc. 误切
+_ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "prof", "st", "sr", "jr", "inc", "ltd", "co",
+    "etc", "vs", "no", "vol", "fig", "dept", "approx", "eg", "ie", "al",
+}
 
 
 def segment_sentences(chunks, *, max_segment=None,
@@ -41,6 +49,9 @@ def segment_sentences(chunks, *, max_segment=None,
         chunks = dedupe_contiguous_boundaries(chunks)
         if not chunks:
             return []
+    # 物理 sanity 上限：句子 end 不应超过最后一块的 end（块 end 取自 offset+duration，可靠），
+    # 用于钳制对齐器损坏/回退的词级时间戳（与是否按时长切句解耦）。
+    audio_end = max((float(c["end"]) for c in chunks), default=0.0)
     long_pause = (cfg.SENTENCE_LONG_PAUSE_MS if long_pause_ms is None else long_pause_ms) / 1000.0
     short_pause = (cfg.SENTENCE_SHORT_PAUSE_MS if short_pause_ms is None else short_pause_ms) / 1000.0
 
@@ -110,9 +121,12 @@ def segment_sentences(chunks, *, max_segment=None,
 
     out = []
     for s in sentences:
-        seg = {"start": round(float(s["start"]), 3),
-               "end": round(float(max(s["end"], s["start"])), 3),
-               "text": s["text"]}
+        if not s["text"].strip():
+            continue                                 # 跳过空文本段（时间切片取整可能产生）
+        start = float(s["start"])
+        end = min(float(max(s["end"], start)), audio_end)   # 钳制损坏时间戳到音频末尾
+        start = min(start, end)                             # 保证 start <= end（防损坏 start 反转）
+        seg = {"start": round(start, 3), "end": round(end, 3), "text": s["text"]}
         if s.get("words"):
             seg["words"] = s["words"]
         if s.get("speaker") is not None:
@@ -124,23 +138,28 @@ def segment_sentences(chunks, *, max_segment=None,
 # ─── 边界重复去重（处理块被拦腰切断的产物）────────────────────────────
 
 def dedupe_contiguous_boundaries(chunks, *, gap_eps=0.05, min_overlap=2, max_overlap=20):
-    """去除"长语音被时长切块拦腰切断"造成的边界重复识别。
+    """去除"长连续语音被强制二次切分（force-split）拦腰切断"造成的边界重复识别。
 
-    长于 MAX_SEGMENT_DURATION 的连续语音会被按时长切成多个"紧邻块"（块间间隙≈0）；
-    切点落在词中时，边界词常被两侧各识别一次（如 "…面前。" + "面前，…"）。
-    本函数仅在紧邻块（gap<=gap_eps）边界上，把前一块尾部与后一块头部重复的"内容字串"
-    （>=min_overlap 个 isalnum 字符，精确匹配）从前一块尾部连同其后随标点一并删除。
+    超长连续语音段会在 _split_segments_to_chunks 中被强制切成多个子块，并在产生切点的
+    子块上打 split_after 标记。切点落在词中时，边界词常被两侧各识别一次（如 "…面前。" +
+    "面前，…"）。本函数仅在 **打了 split_after 的人为切点**（且两侧紧邻 gap<=gap_eps）上，
+    把前一块尾部与后一块头部重复的"内容字串"（>=min_overlap 个 isalnum 字符，精确匹配）
+    从前一块尾部连同其后随标点一并删除。
 
-    只作用于紧邻（时长切块）边界——真正连续重复的口语（"对对对"）通常在同一块内，或跨越
-    VAD 静音间隙（gap>0），不会被误删。
+    只认 force-split 人为切点——自然连续/重叠的口语（"好好"、"对对对"）不带 split_after，
+    永不被误删；失败标记 [识别失败] 块两侧边界一律跳过（其字符不应参与内容去重）。
     """
     out = [dict(c) for c in chunks]
     for i in range(len(out) - 1):
         a, b = out[i], out[i + 1]
         if not (a.get("text") and b.get("text")):
             continue
+        if not a.get("split_after"):
+            continue                                   # 仅 force-split 人为切点
+        if a["text"].strip() == _FAIL_MARK or b["text"].strip() == _FAIL_MARK:
+            continue                                   # 失败标记不参与内容去重
         if float(b["start"]) - float(a["end"]) > gap_eps:
-            continue                                   # 仅紧邻（时长切块）边界
+            continue                                   # 仅紧邻
         overlap = _boundary_overlap(a["text"], b["text"], min_overlap, max_overlap)
         if overlap:
             _trim_tail_content(a, overlap)             # 删前块尾重复 + 其后随标点
@@ -257,11 +276,13 @@ def _subsplit(s, max_seg):
 def _time_slice(p, max_seg):
     """无标点超长片段：按等时长切若干段，文本按字符比例分摊，词按归属落段。"""
     dur = p["end"] - p["start"]
-    k = max(1, int(-(-dur // max_seg)))   # ceil(dur / max_seg)
-    if k <= 1:
-        return [p]
     text = p["text"]
     n = len(text)
+    k = max(1, math.ceil(dur / max_seg))
+    if n:
+        k = min(k, n)                     # 切片数不超过字符数，杜绝空文本片段
+    if k <= 1:
+        return [p]
     words = p.get("words") or None
     positions = _word_positions(text, words) if words else None
     out = []
@@ -337,7 +358,7 @@ def _is_sentence_end_at(text, i):
 
 
 def _is_english_period_end(text, i):
-    """英文句点 . 是否为句末：排除小数、点开头 token、单字母缩写。"""
+    """英文句点 . 是否为句末：排除小数、点开头 token、常见缩写、无空格缩写（U.S）。"""
     if i == 0:
         return False
     prev = text[i - 1]
@@ -346,16 +367,35 @@ def _is_english_period_end(text, i):
     nxt = text[i + 1] if i + 1 < len(text) else ""
     if prev.isdigit() and nxt.isdigit():
         return False                       # 小数 3.14
-    # 单字母缩写保护（e.g. / i.e.）：句点前紧邻字母串长度为 1
-    j = i - 1
-    while j >= 0 and text[j].isalnum():
-        j -= 1
-    if (i - 1 - j) < 2 and prev.isascii() and prev.isalpha():
+    # 无空白紧接大写/中文：aligner 粘连（back.In，左 token>=2 字母）按句末切；
+    # 单字母+紧接大写（U.S / A.B）→ 缩写内部，不切
+    if (nxt.isupper() or _is_cjk(nxt)) and not nxt.isspace():
+        return _alpha_run_len(text, i) >= 2
+    # 真句末信号：到文本结尾 / 后接空白；后接小写等 → 词内点（e.g 首点 / domain）
+    if not (nxt == "" or nxt.isspace()):
         return False
-    if nxt == "" or nxt.isspace() or nxt.isupper() or _is_cjk(nxt):
-        return True                        # 句末 / 空白 / 大写起句 / 中文起句（含 back.In）
-    return False
+    if _preceding_token_is_abbrev(text, i):
+        return False                       # Mr. / Dr. / etc. / e.g. / i.e. / U.S.
+    return True
+
+
+def _alpha_run_len(text, i):
+    """句点 i 前连续字母的个数。"""
+    j = i - 1
+    while j >= 0 and text[j].isalpha():
+        j -= 1
+    return i - 1 - j
+
+
+def _preceding_token_is_abbrev(text, i):
+    """句点 i 前是否为常见缩写：点状缩写（e.g./i.e./U.S.）或单 token（mr/dr/etc）。"""
+    if i >= 2 and text[i - 1].isalpha() and text[i - 2] == ".":
+        return True                        # x.y. 形态的第二个点
+    j = i - 1
+    while j >= 0 and text[j].isalpha():
+        j -= 1
+    return text[j + 1:i].lower() in _ABBREVIATIONS
 
 
 def _is_cjk(ch):
-    return "一" <= ch <= "鿿"
+    return bool(ch) and "一" <= ch <= "鿿"

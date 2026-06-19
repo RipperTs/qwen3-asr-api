@@ -312,6 +312,8 @@ class ASRPipeline:
                 }
                 if self.asr.align_enabled and words:
                     segment["words"] = words
+                if chunk_info.get("split_after"):
+                    segment["split_after"] = True
                 if text.strip():
                     segments.append(segment)
 
@@ -359,6 +361,8 @@ class ASRPipeline:
                 }
                 if self.asr.align_enabled and words:
                     segment["words"] = words
+                if chunk_info.get("split_after"):
+                    segment["split_after"] = True
 
                 if text.strip():
                     segments.append(segment)
@@ -469,16 +473,19 @@ class ASRPipeline:
         两个阈值解耦（关键）：
         - 合并跨度上限 merge_max（=max_segment_sec 或 MAX_SEGMENT_DURATION）：相邻 VAD 段
           的合并发生在静音间隙处，安全。
-        - 强制二次切分阈值 force_max（=max_segment_sec 或 MAX_ASR_CHUNK_DURATION）：仅当
+        - 强制二次切分阈值 force_max（恒为 MAX_ASR_CHUNK_DURATION，显存/质量旋钮）：仅当
           「单个连续语音段」超过此值才切，且切在最安静处（停顿），避免把连续语句切在词中
           间导致边界词重复识别/漏字。force_max 远大于 merge_max，故大多数连续语句整段送 ASR。
+          注意 force_max 不随显式 max_segment 变动——max_segment 只作句子输出上限（见
+          sentence_segmenter），若令其压低 force_max 会重新引入词中切分。
 
         返回:
-            [{"path": str, "offset_sec": float, "duration_sec": float}, ...]
+            [{"path": str, "offset_sec": float, "duration_sec": float, "split_after"?: bool}, ...]
+            split_after=True 标记 force-split 产生的人为切点（供边界去重精准定位）。
         """
         data, sr = sf.read(wav_path)
-        merge_max = max_segment_sec or cfg.MAX_SEGMENT_DURATION
-        force_max = max_segment_sec or cfg.MAX_ASR_CHUNK_DURATION
+        merge_max = max_segment_sec if max_segment_sec is not None else cfg.MAX_SEGMENT_DURATION
+        force_max = cfg.MAX_ASR_CHUNK_DURATION
 
         # 先合并碎片段（仅在静音间隙处合并）
         merged = self._merge_vad_segments(vad_segments, merge_max)
@@ -526,6 +533,7 @@ class ASRPipeline:
                         "path": chunk_path,
                         "offset_sec": chunk_offset_sec,
                         "duration_sec": len(sub_data) / sr,
+                        "split_after": end < len(segment_data),   # 非末子块=force-split 人为切点
                     })
                     offset = end
                     idx += 1
