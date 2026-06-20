@@ -8,11 +8,10 @@ name: Docker Publish
 #      使阿里云镜像仓库上各 tag 同时出现、顺序一致，且发布接近原子（任一构建失败则不挂 tag）。
 #
 # 镜像变体：
-#   - GPU  (amd64)            -> :X.Y.Z        / :latest
 #   - CPU  (amd64)            -> :X.Y.Z-cpu    / :latest-cpu
 #   - vLLM (amd64)            -> :X.Y.Z-vllm   / :latest-vllm
 #     vLLM 变体为 GPU 原生流式独立镜像（基底 vllm/vllm-openai），独立 build + merge-vllm，
-#     构建失败不阻塞 GPU/CPU 发布。
+#     构建失败不阻塞 CPU 发布。
 on:
   push:
     tags:
@@ -31,52 +30,6 @@ jobs:
     steps:
       - id: derive
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-  gpu:
-    needs: setup
-    runs-on: ubuntu-latest
-    steps:
-      # GPU 镜像解压后约 8-10GB，标准 runner 默认可用磁盘不足，先清理腾出 20-30GB
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
-          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
-
-      - name: Build and push by digest (GPU, amd64)
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/amd64
-          build-args: |
-            APP_VERSION=${{ needs.setup.outputs.version }}
-          # 仅推送 blob 并记录 digest，不挂 tag；关闭 provenance 以保持 manifest 干净
-          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          provenance: false
-
-      - name: Export digest
-        run: |
-          mkdir -p "${RUNNER_TEMP}/digests"
-          digest="${{ steps.build.outputs.digest }}"
-          touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: digests-gpu
-          path: ${{ runner.temp }}/digests/*
-          if-no-files-found: error
-          retention-days: 1
 
   cpu-amd64:
     needs: setup
@@ -163,9 +116,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # 全部构建完成后统一挂 tag：GPU 与 CPU 均为 amd64 单架构
+  # CPU 构建完成后统一挂 tag：amd64 单架构
   merge:
-    needs: [setup, gpu, cpu-amd64]
+    needs: [setup, cpu-amd64]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.setup.outputs.version }}
@@ -187,35 +140,25 @@ jobs:
       - name: Resolve digests
         id: digests
         run: |
-          gpu=$(ls "${RUNNER_TEMP}/digests/digests-gpu")
           amd64=$(ls "${RUNNER_TEMP}/digests/digests-cpu-amd64")
-          {
-            echo "gpu_src=${IMAGE_NAME}@sha256:${gpu}"
-            echo "cpu_src=${IMAGE_NAME}@sha256:${amd64}"
-          } >> "$GITHUB_OUTPUT"
+          echo "cpu_src=${IMAGE_NAME}@sha256:${amd64}" >> "$GITHUB_OUTPUT"
 
-      # 推送顺序：版本号 -> 版本号-cpu -> latest -> latest-cpu（latest 最后推，时间戳最新）
-      - name: Push version tags
+      - name: Push cpu version tag
         run: |
-          docker buildx imagetools create -t "${IMAGE_NAME}:${VERSION}" \
-            "${{ steps.digests.outputs.gpu_src }}"
           docker buildx imagetools create -t "${IMAGE_NAME}:${VERSION}-cpu" \
             "${{ steps.digests.outputs.cpu_src }}"
 
-      - name: Push latest tags
+      - name: Push latest cpu tag
         run: |
-          docker buildx imagetools create -t "${IMAGE_NAME}:latest" \
-            "${{ steps.digests.outputs.gpu_src }}"
           docker buildx imagetools create -t "${IMAGE_NAME}:latest-cpu" \
             "${{ steps.digests.outputs.cpu_src }}"
 
       - name: Inspect published tags
         run: |
-          docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
           docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}-cpu"
 
   # vLLM 独立挂 tag：仅依赖 vllm 构建，与 gpu/cpu 的 merge 解耦，
-  # vLLM 构建失败不影响 GPU/CPU 镜像发布
+  # vLLM 构建失败不影响 CPU 镜像发布
   merge-vllm:
     needs: [setup, vllm]
     runs-on: ubuntu-latest
