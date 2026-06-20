@@ -38,7 +38,7 @@ def isolated_create_app(tmp_path, monkeypatch):
     saved_level = root.level
     keys = ("MODEL_SOURCE", "MAX_SEGMENT_DURATION", "HOST", "PORT", "API_KEY", "MAX_QUEUE_SIZE",
             "SERVE_MODE", "ENABLE_STREAM", "MAX_STREAM_SESSIONS", "STREAM_ASR_CONCURRENCY",
-            "STREAM_SAVE_AUDIO", "STREAM_RECORDING_RETENTION_HOURS",
+            "STREAM_SAVE_AUDIO", "STREAM_RECORDINGS_DIR", "STREAM_RECORDING_RETENTION_HOURS",
             "CONFIG_FILE", "ENABLE_SPEAKER", "SPEAKER_THRESHOLD", "SPEAKER_MAX",
             "SPEAKER_MIN_SEG_MS", "SPEAKER_MAX_WINDOWS",
             "ENABLE_SPEAKER_DB", "SPEAKER_DB_PATH", "SPEAKER_ID_THRESHOLD", "SPEAKER_ID_MARGIN",
@@ -228,6 +228,49 @@ def test_stream_save_audio_disabled_without_api_key(isolated_create_app, monkeyp
     assert stream["recording_download_path"] is None
 
 
+def test_stream_recording_manager_resolves_relative_dir(tmp_path, monkeypatch):
+    """录音目录相对路径按服务根解析，便于 Docker 挂载 data/stream_recordings。"""
+    import app.config as cfg
+    import app.main as main
+    import app.runtime.stream_recording as stream_recording
+
+    captured = {}
+
+    class FakeManager:
+        def __init__(self, *, enabled, directory, retention_hours):
+            captured.update(
+                enabled=enabled,
+                directory=directory,
+                retention_hours=retention_hours,
+            )
+
+        def cleanup_expired(self):
+            return 0
+
+    saved = {k: getattr(cfg, k) for k in (
+        "BASE_DIR", "API_KEY", "STREAM_SAVE_AUDIO", "STREAM_RECORDINGS_DIR",
+        "STREAM_RECORDING_RETENTION_HOURS",
+    )}
+    monkeypatch.setattr(stream_recording, "StreamRecordingManager", FakeManager)
+    try:
+        cfg.BASE_DIR = str(tmp_path / "service")
+        cfg.API_KEY = "sk"
+        cfg.STREAM_SAVE_AUDIO = True
+        cfg.STREAM_RECORDINGS_DIR = "data/stream_recordings"
+        cfg.STREAM_RECORDING_RETENTION_HOURS = 12
+
+        main._init_stream_recording_manager()
+
+        assert captured == {
+            "enabled": True,
+            "directory": str(tmp_path / "service" / "data" / "stream_recordings"),
+            "retention_hours": 12,
+        }
+    finally:
+        for k, v in saved.items():
+            setattr(cfg, k, v)
+
+
 def test_config_stream_defaults():
     import app.config as cfg
     assert cfg.SERVE_MODE == "standard"
@@ -241,6 +284,7 @@ def test_config_stream_defaults():
     assert cfg.STREAM_MAX_BACKLOG_BYTES == 8 * 1024 * 1024
     assert cfg.STREAM_SAMPLE_RATE == 16000
     assert cfg.STREAM_SAVE_AUDIO is False
+    assert cfg.STREAM_RECORDINGS_DIR == "data/stream_recordings"
     assert cfg.STREAM_RECORDING_RETENTION_HOURS == 72
 
 
@@ -254,6 +298,7 @@ def test_parse_args_defaults(monkeypatch):
     assert args.max_stream_sessions is None
     assert args.stream_asr_concurrency is None
     assert args.stream_save_audio is False
+    assert args.stream_recordings_dir == "data/stream_recordings"
     assert args.stream_recording_retention_hours == 72
 
 
@@ -262,13 +307,15 @@ def test_parse_args_stream_flags(monkeypatch):
     monkeypatch.setattr("sys.argv", [
         "prog", "--no-config", "--serve-mode", "standard", "--enable-stream",
         "--max-stream-sessions", "8", "--stream-asr-concurrency", "3",
-        "--stream-save-audio", "--stream-recording-retention-hours", "48",
+        "--stream-save-audio", "--stream-recordings-dir", "data/recordings",
+        "--stream-recording-retention-hours", "48",
     ])
     args = parse_args()
     assert args.enable_stream is True
     assert args.max_stream_sessions == 8
     assert args.stream_asr_concurrency == 3
     assert args.stream_save_audio is True
+    assert args.stream_recordings_dir == "data/recordings"
     assert args.stream_recording_retention_hours == 48
 
 
@@ -353,11 +400,12 @@ def test_apply_cli_config_writes_stream(monkeypatch):
     monkeypatch.setattr("sys.argv", [
         "prog", "--no-config", "--enable-stream",
         "--max-stream-sessions", "5", "--stream-asr-concurrency", "4",
-        "--stream-save-audio", "--stream-recording-retention-hours", "24",
+        "--stream-save-audio", "--stream-recordings-dir", "data/custom-recordings",
+        "--stream-recording-retention-hours", "24",
     ])
     saved = {k: getattr(cfg, k) for k in ("SERVE_MODE", "ENABLE_STREAM", "MAX_STREAM_SESSIONS",
                                           "STREAM_ASR_CONCURRENCY", "STREAM_SAVE_AUDIO",
-                                          "STREAM_RECORDING_RETENTION_HOURS",
+                                          "STREAM_RECORDINGS_DIR", "STREAM_RECORDING_RETENTION_HOURS",
                                           "MODEL_SOURCE", "MAX_SEGMENT_DURATION")}
     try:
         _apply_cli_config(parse_args())
@@ -365,6 +413,7 @@ def test_apply_cli_config_writes_stream(monkeypatch):
         assert cfg.MAX_STREAM_SESSIONS == 5
         assert cfg.STREAM_ASR_CONCURRENCY == 4
         assert cfg.STREAM_SAVE_AUDIO is True
+        assert cfg.STREAM_RECORDINGS_DIR == "data/custom-recordings"
         assert cfg.STREAM_RECORDING_RETENTION_HOURS == 24
     finally:
         for k, v in saved.items():

@@ -57,7 +57,7 @@ Docker 方式：
 docker run -d --gpus all -p 8765:8765 \
   -v ./asr-service/models:/app/models \
   --name qwen3-asr-service \
-  lancelrq/qwen3-asr-service:latest --web
+  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest --web
 ```
 
 > Windows 部署、CPU/ARM64 模式、docker-compose、局域网访问、API 认证等：见 [部署指南](docs/deployment.md)。

@@ -24,6 +24,7 @@ enable_stream: true         # WS /v2/asr/stream（standard 模式）
 # max_stream_sessions: 16   # 实时最大并发会话数
 # stream_asr_concurrency: 1 # 实时 ASR 解码并发上限（模型层有推理锁，>1 无收益）
 # stream_save_audio: false  # 保存实时录音原件为 WAV（默认关；实际启用和下载/删除均要求 api_key）
+# stream_recordings_dir: data/stream_recordings # 实时录音保存目录；相对路径按服务根目录解析，便于挂载 data/
 # stream_recording_retention_hours: 72 # 实时录音保留时长（小时），启动时清理；0=永不清理
 
 # ── 智能远场过滤（减少远场/环境音误触发，默认关）──

@@ -151,7 +151,30 @@ WS /v2/asr/stream
 
 ### 实时录音下载 / 删除
 
-默认不保存录音。启动时配置 `stream_save_audio: true` / `--stream-save-audio` 且服务端配置了 `api_key` 后，服务端保存每个实时会话收到的 PCM16 输入为 WAV；未配置 `api_key` 时保存不会启用。
+默认不保存录音。启动时配置 `stream_save_audio: true` / `--stream-save-audio` 且服务端配置了 `api_key` 后，服务端保存每个实时会话收到的 PCM16 输入为 WAV；未配置 `api_key` 时保存不会启用。保存目录由 `stream_recordings_dir` / `--stream-recordings-dir` 控制，默认 `data/stream_recordings`（相对服务根目录）。
+
+推荐在 `config.yaml` 中开启：
+
+```yaml
+api_key: sk-your-key
+enable_stream: true
+stream_save_audio: true
+stream_recordings_dir: data/stream_recordings
+stream_recording_retention_hours: 72
+```
+
+等价 CLI：
+
+```bash
+.venv/bin/python -m app.main \
+  --enable-stream \
+  --api-key sk-your-key \
+  --stream-save-audio \
+  --stream-recordings-dir data/stream_recordings \
+  --stream-recording-retention-hours 72
+```
+
+Docker 部署时默认目录对应容器内 `/app/data/stream_recordings`；compose 示例已挂载 `/app/data`，因此宿主机可在 `asr-service/data/stream_recordings` 下看到 WAV。若要接入独立大盘，可把 `stream_recordings_dir` 配成绝对路径（如 `/recordings`）并额外挂载该目录。
 
 原生 `WS /v2/asr/stream` 会下发：
 
@@ -163,18 +186,35 @@ WS /v2/asr/stream
 
 录音保留时长由 `stream_recording_retention_hours` / `--stream-recording-retention-hours` 控制，默认 `72` 小时，服务启动时清理过期文件，`0` 表示永不自动清理。
 
-下载：
+下载接口：
 
 ```
 GET /v2/stream-recordings/{recording_id}
 Authorization: Bearer <api-key>
 ```
 
-删除：
+下载示例：
+
+```bash
+curl -L \
+  -H "Authorization: Bearer sk-your-key" \
+  -o stream.wav \
+  http://127.0.0.1:8765/v2/stream-recordings/9f86...
+```
+
+删除接口：
 
 ```
 DELETE /v2/stream-recordings/{recording_id}
 Authorization: Bearer <api-key>
+```
+
+删除示例：
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer sk-your-key" \
+  http://127.0.0.1:8765/v2/stream-recordings/9f86...
 ```
 
 删除响应：
@@ -183,7 +223,7 @@ Authorization: Bearer <api-key>
 {"recording_id": "9f86...", "status": "deleted", "deleted": true}
 ```
 
-录音接口强制要求服务端配置 `api_key`，并要求请求携带 Bearer Token；未配置 `api_key` 时返回 503，鉴权失败返回 401，文件不存在下载返回 404，删除返回 `{"status":"not_found","deleted":false}`。
+录音接口强制要求服务端配置 `api_key`，并要求请求携带 Bearer Token；未配置 `api_key` 时返回 503，鉴权失败返回 401，文件不存在下载返回 404，删除返回 `{"status":"not_found","deleted":false}`。删除只移除保存的 WAV 文件，不影响已经返回给客户端的识别结果。
 
 ### 错误码
 

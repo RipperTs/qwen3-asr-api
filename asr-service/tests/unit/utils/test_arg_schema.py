@@ -26,6 +26,7 @@ LEGACY_DEFAULTS = {
     "max_stream_sessions": None,
     "stream_asr_concurrency": None,
     "stream_save_audio": False,
+    "stream_recordings_dir": "data/stream_recordings",
     "stream_recording_retention_hours": 72,
     # ── 远场过滤新增，非重构前遗留 ──
     "vad_speech_noise_thres": 0.6,

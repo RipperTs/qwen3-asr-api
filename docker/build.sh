@@ -5,7 +5,7 @@ set -e
 # 脚本已移入 docker/，故从自身位置回退一级定位根，支持任意目录调用。
 cd "$(dirname "$0")/.."
 
-IMAGE_NAME="lancelrq/qwen3-asr-service"
+IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service"
 
 # 本地构建默认走华科镜像加速 APT 源；可用环境变量覆盖（置空则用 Ubuntu 官方源）
 APT_MIRROR="${APT_MIRROR-mirrors.hust.edu.cn}"

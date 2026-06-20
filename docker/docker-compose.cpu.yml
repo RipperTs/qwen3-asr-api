@@ -1,11 +1,11 @@
 services:
   asr:
-    image: lancelrq/qwen3-asr-service:latest-cpu
+    image: registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-cpu
     # build:                                  # 本文件在 docker/ 下，上下文需指向仓库根
     #   context: ..
     #   dockerfile: docker/Dockerfile.cpu
     #   tags:
-    #     - lancelrq/qwen3-asr-service:latest-cpu
+    #     - registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-cpu
     ports:
       - "8765:8765"
     # environment:                       # 需要时取消下面两行注释
@@ -16,7 +16,7 @@ services:
       - ../asr-service/config.yaml:/app/config.yaml
       - ../asr-service/models:/app/models
       - ../asr-service/logs:/app/logs
-      # SQLite 数据库（任务持久化 data/tasks.db、声纹库 data/speakers.db）：挂出以跨重建保留
+      # 持久数据（任务库、声纹库、实时录音 data/stream_recordings）：挂出以跨重建保留
       - ../asr-service/data:/app/data
     # 已挂载 config.yaml，服务配置以其为准；如需用 CLI 覆盖（优先级高于配置文件）可取消注释
     # （CPU 镜像 ENTRYPOINT 已强制 --device cpu）：

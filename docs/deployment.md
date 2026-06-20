@@ -133,7 +133,7 @@ bash start.sh
 
 ```bash
 # 拉取镜像
-docker pull lancelrq/qwen3-asr-service:latest
+docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest
 
 # 启动容器（GPU 模式）
 docker run -d --gpus all \
@@ -142,7 +142,7 @@ docker run -d --gpus all \
   -v ./asr-service/logs:/app/logs \
   -v ./asr-service/data:/app/data \
   --name qwen3-asr-service \
-  lancelrq/qwen3-asr-service:latest \
+  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest \
   --model-size 0.6b --device auto --web
 ```
 

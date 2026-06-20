@@ -61,6 +61,11 @@ _CFG_FALLBACK_ATTRS = {
 }
 
 
+def _resolve_service_path(path: str) -> str:
+    """相对路径按服务根目录解析，绝对路径原样返回。"""
+    return path if os.path.isabs(path) else os.path.join(cfg.BASE_DIR, path)
+
+
 def _init_stream_recording_manager():
     """创建流式录音管理器并执行启动清理。"""
     from app.runtime.stream_recording import StreamRecordingManager
@@ -70,7 +75,7 @@ def _init_stream_recording_manager():
         logger.warning("已请求保存实时录音，但未配置 api_key；录音保存已禁用")
     manager = StreamRecordingManager(
         enabled=enabled,
-        directory=cfg.STREAM_RECORDINGS_DIR,
+        directory=_resolve_service_path(cfg.STREAM_RECORDINGS_DIR),
         retention_hours=cfg.STREAM_RECORDING_RETENTION_HOURS,
     )
     expired = manager.cleanup_expired()
@@ -152,6 +157,8 @@ def _apply_cli_config(args):
     if getattr(args, "stream_asr_concurrency", None) is not None:
         cfg.STREAM_ASR_CONCURRENCY = args.stream_asr_concurrency
     cfg.STREAM_SAVE_AUDIO = getattr(args, "stream_save_audio", False)
+    if getattr(args, "stream_recordings_dir", None) is not None:
+        cfg.STREAM_RECORDINGS_DIR = args.stream_recordings_dir
     if getattr(args, "stream_recording_retention_hours", None) is not None:
         cfg.STREAM_RECORDING_RETENTION_HOURS = args.stream_recording_retention_hours
     if getattr(args, "vad_speech_noise_thres", None) is not None:

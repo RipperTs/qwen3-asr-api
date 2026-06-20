@@ -77,12 +77,38 @@
 
 ### 实时录音留存
 
-默认不保存实时推流音频。开启且配置了 `api_key` 后，服务端把每个实时会话收到的 PCM16 输入封装为 WAV 文件，存放在临时缓存目录的 `stream_recordings` 子目录；未配置 `api_key` 时保存不会启用。录音属于敏感数据，下载和删除接口强制要求配置 `api_key` 并携带 Bearer Token。
+默认不保存实时推流音频。开启且配置了 `api_key` 后，服务端把每个实时会话收到的 PCM16 输入封装为 WAV 文件，默认存放在服务根目录的 `data/stream_recordings`；相对路径按服务根目录解析，容器内对应 `/app/data/stream_recordings`，可通过挂载 `/app/data` 或配置绝对路径接入外部存储。未配置 `api_key` 时保存不会启用。录音属于敏感数据，下载和删除接口强制要求配置 `api_key` 并携带 Bearer Token。
 
 | 参数 | 取值 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--stream-save-audio` / `--no-stream-save-audio` | - | 关闭 | 保存实时录音原件为 WAV；开启后 WS 会在 `start` 后返回 `recording.created` |
+| `--stream-recordings-dir` | 路径 | `data/stream_recordings` | 实时录音保存目录；相对路径按服务根目录解析，可设为外部挂载路径 |
 | `--stream-recording-retention-hours` | 小时 | `72` | 录音保留时长，启动时清理过期文件；`0` = 永不自动清理 |
+
+最小配置示例：
+
+```yaml
+api_key: sk-your-key
+enable_stream: true
+stream_save_audio: true
+stream_recordings_dir: data/stream_recordings
+stream_recording_retention_hours: 72
+```
+
+独立挂载示例：
+
+```yaml
+# config.yaml
+stream_recordings_dir: /recordings
+```
+
+```yaml
+# docker compose
+volumes:
+  - /mnt/asr-recordings:/recordings
+```
+
+下载 / 删除接口见[转写 · 实时录音下载 / 删除](api/v2/transcription.md#实时录音下载--删除)。
 
 ### 说话人分离
 

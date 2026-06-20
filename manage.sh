@@ -16,7 +16,7 @@ COMPOSE_FILE_VLLM="$PROJECT_ROOT/docker/docker-compose.vllm.yml"
 SERVICE_CONFIG="$SERVICE_DIR/config.yaml"
 SERVICE_CONFIG_EXAMPLE="$SERVICE_DIR/config.example.yaml"
 CONFIG_FILE="$SERVICE_DIR/.cli_launch_config"
-IMAGE_NAME="lancelrq/qwen3-asr-service"
+IMAGE_NAME="registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service"
 IMAGE_TAG="latest"
 CONTAINER_NAME="qwen3-asr-service"
 
@@ -571,7 +571,7 @@ toggle_compose_variant() {
     esac
     success_msg "已切换为 $ACTIVE_COMPOSE_VARIANT 编排"
     if [ "$ACTIVE_COMPOSE_VARIANT" = "vllm" ]; then
-        info_msg "vLLM 镜像 lancelrq/qwen3-asr-service:latest-vllm；首次需先拉取或构建（docker/build.sh 选 4）"
+        info_msg "vLLM 镜像 registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm；首次需先拉取或构建（docker/build.sh 选 4）"
     fi
     press_any_key
 }

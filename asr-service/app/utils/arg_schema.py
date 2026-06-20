@@ -150,6 +150,15 @@ ARG_SPECS = (
         negative_help_en="Do not save realtime input audio (overrides config file)",
     ),
     ArgSpec(
+        key="stream_recordings_dir",
+        flags=("--stream-recordings-dir",),
+        default="data/stream_recordings",
+        group="实时转写",
+        help="实时录音保存目录；相对路径按服务根目录解析 (default: data/stream_recordings)",
+        help_en="Realtime recording directory; relative paths are resolved from the "
+                "service root (default: data/stream_recordings)",
+    ),
+    ArgSpec(
         key="stream_recording_retention_hours",
         flags=("--stream-recording-retention-hours",),
         default=72,

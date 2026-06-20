@@ -79,6 +79,18 @@ def test_real_repo_registry_never_exposes_plan():
     docs_site.reset_cache()
 
 
+def test_real_repo_stream_recording_docs_render_controls():
+    """真实文档中心应包含流式录音保存、下载、删除的完整操作说明。"""
+    docs_site.reset_cache()
+    page = docs_site.render_doc_page("api/v2/transcription")
+    assert page is not None
+    assert "stream_save_audio: true" in page
+    assert "stream_recordings_dir" in page
+    assert "curl -L" in page
+    assert "DELETE /v2/stream-recordings/{recording_id}" in page
+    docs_site.reset_cache()
+
+
 # ---------- 渲染与链接重写 ----------
 
 def test_render_rewrites_md_links_to_routes(fake_repo):
@@ -86,7 +98,7 @@ def test_render_rewrites_md_links_to_routes(fake_repo):
     assert 'href="/web-ui/docs/api/v2#响应格式"' in page      # 带锚点的 .md 链接
     assert 'href="/web-ui/docs/readme"' in page               # ../README.md 归一化
     assert (
-        'href="https://github.com/LanceLRQ/qwen3-asr-service/blob/main/'
+        'href="https://github.com/RipperTs/qwen3-asr-api/blob/main/'
         'asr-service/config.example.yaml"' in page
     )                                                          # 仓库内非文档文件 → GitHub
     assert 'href="https://example.com/x.md"' in page          # 外链原样保留

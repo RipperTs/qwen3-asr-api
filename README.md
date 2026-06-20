@@ -59,7 +59,7 @@ With Docker:
 docker run -d --gpus all -p 8765:8765 \
   -v ./asr-service/models:/app/models \
   --name qwen3-asr-service \
-  lancelrq/qwen3-asr-service:latest --web
+  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest --web
 ```
 
 > Windows deployment, CPU/ARM64 modes, docker-compose, LAN access, API authentication and more: see the [deployment guide](docs/deployment_EN.md).

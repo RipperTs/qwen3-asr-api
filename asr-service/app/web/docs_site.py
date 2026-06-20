@@ -23,8 +23,8 @@ from app.config import BASE_DIR
 
 logger = logging.getLogger(__name__)
 
-GITHUB_BLOB_BASE = "https://github.com/LanceLRQ/qwen3-asr-service/blob/main"
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/LanceLRQ/qwen3-asr-service/main"
+GITHUB_BLOB_BASE = "https://github.com/RipperTs/qwen3-asr-api/blob/main"
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/RipperTs/qwen3-asr-api/main"
 DOCS_ROUTE_PREFIX = "/web-ui/docs"
 # 文档内图片 docs/images/* 重写到此前缀（由 main 静态挂载 docs/images），离线可用
 DOCS_MEDIA_PREFIX = "/web-ui/docs-media"

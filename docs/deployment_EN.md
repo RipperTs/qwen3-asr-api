@@ -133,7 +133,7 @@ Client usage: see [API reference · Authentication](api/v2/basics_EN.md#authenti
 
 ```bash
 # Pull the image
-docker pull lancelrq/qwen3-asr-service:latest
+docker pull registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest
 
 # Start the container (GPU mode)
 docker run -d --gpus all \
@@ -142,7 +142,7 @@ docker run -d --gpus all \
   -v ./asr-service/logs:/app/logs \
   -v ./asr-service/data:/app/data \
   --name qwen3-asr-service \
-  lancelrq/qwen3-asr-service:latest \
+  registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest \
   --model-size 0.6b --device auto --web
 ```
 

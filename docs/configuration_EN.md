@@ -77,12 +77,38 @@ Reduces false triggers from far-field sounds and ambient noise. `--vad-speech-no
 
 ### Real-time Recording Retention
 
-Real-time input audio is not saved by default. When enabled with a configured `api_key`, each real-time session's received PCM16 input is wrapped as a WAV file under the temporary cache `stream_recordings` directory; if no `api_key` is configured, saving is not enabled. Recordings are sensitive data: download and delete endpoints require a configured `api_key` plus a Bearer token.
+Real-time input audio is not saved by default. When enabled with a configured `api_key`, each real-time session's received PCM16 input is wrapped as a WAV file under `data/stream_recordings` by default. Relative paths are resolved from the service root; in containers this is `/app/data/stream_recordings`, so mounting `/app/data` or setting an absolute path connects external storage. If no `api_key` is configured, saving is not enabled. Recordings are sensitive data: download and delete endpoints require a configured `api_key` plus a Bearer token.
 
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
 | `--stream-save-audio` / `--no-stream-save-audio` | - | Disabled | Save real-time input audio as WAV; when enabled, the WS sends `recording.created` after `start` |
+| `--stream-recordings-dir` | Path | `data/stream_recordings` | Realtime recording directory; relative paths are resolved from the service root and may point to an external mount |
 | `--stream-recording-retention-hours` | Hours | `72` | Recording retention window, cleaned at startup; `0` = never auto-clean |
+
+Minimal config example:
+
+```yaml
+api_key: sk-your-key
+enable_stream: true
+stream_save_audio: true
+stream_recordings_dir: data/stream_recordings
+stream_recording_retention_hours: 72
+```
+
+Dedicated mount example:
+
+```yaml
+# config.yaml
+stream_recordings_dir: /recordings
+```
+
+```yaml
+# docker compose
+volumes:
+  - /mnt/asr-recordings:/recordings
+```
+
+See [Transcription · Real-time Recording Download / Delete](api/v2/transcription_EN.md#real-time-recording-download--delete) for the download/delete endpoints.
 
 ### Speaker Diarization
 

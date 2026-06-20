@@ -151,7 +151,30 @@ All server-to-client messages use a uniform envelope and carry a `type`:
 
 ### Real-time Recording Download / Delete
 
-Recordings are not saved by default. Start with `stream_save_audio: true` / `--stream-save-audio` and a configured server-side `api_key` to save each real-time session's received PCM16 input as WAV. If no `api_key` is configured, recording saving is not enabled.
+Recordings are not saved by default. Start with `stream_save_audio: true` / `--stream-save-audio` and a configured server-side `api_key` to save each real-time session's received PCM16 input as WAV. If no `api_key` is configured, recording saving is not enabled. The directory is controlled by `stream_recordings_dir` / `--stream-recordings-dir`, defaulting to `data/stream_recordings` relative to the service root.
+
+Recommended `config.yaml`:
+
+```yaml
+api_key: sk-your-key
+enable_stream: true
+stream_save_audio: true
+stream_recordings_dir: data/stream_recordings
+stream_recording_retention_hours: 72
+```
+
+Equivalent CLI:
+
+```bash
+.venv/bin/python -m app.main \
+  --enable-stream \
+  --api-key sk-your-key \
+  --stream-save-audio \
+  --stream-recordings-dir data/stream_recordings \
+  --stream-recording-retention-hours 72
+```
+
+In Docker deployments the default maps to `/app/data/stream_recordings`; the compose files already mount `/app/data`, so WAV files appear under `asr-service/data/stream_recordings` on the host. For a dedicated disk, set `stream_recordings_dir` to an absolute path such as `/recordings` and mount that path separately.
 
 Native `WS /v2/asr/stream` emits:
 
@@ -163,18 +186,35 @@ Compatible real-time APIs carry the same info in their start confirmation messag
 
 Retention is controlled by `stream_recording_retention_hours` / `--stream-recording-retention-hours`, default `72` hours. Expired files are cleaned at service startup; `0` means never auto-clean.
 
-Download:
+Download endpoint:
 
 ```
 GET /v2/stream-recordings/{recording_id}
 Authorization: Bearer <api-key>
 ```
 
-Delete:
+Download example:
+
+```bash
+curl -L \
+  -H "Authorization: Bearer sk-your-key" \
+  -o stream.wav \
+  http://127.0.0.1:8765/v2/stream-recordings/9f86...
+```
+
+Delete endpoint:
 
 ```
 DELETE /v2/stream-recordings/{recording_id}
 Authorization: Bearer <api-key>
+```
+
+Delete example:
+
+```bash
+curl -X DELETE \
+  -H "Authorization: Bearer sk-your-key" \
+  http://127.0.0.1:8765/v2/stream-recordings/9f86...
 ```
 
 Delete response:
@@ -183,7 +223,7 @@ Delete response:
 {"recording_id": "9f86...", "status": "deleted", "deleted": true}
 ```
 
-Recording endpoints require the server to have `api_key` configured and require a Bearer token on the request. No server `api_key` returns 503; auth failure returns 401; missing file returns 404 for download and `{"status":"not_found","deleted":false}` for delete.
+Recording endpoints require the server to have `api_key` configured and require a Bearer token on the request. No server `api_key` returns 503; auth failure returns 401; missing file returns 404 for download and `{"status":"not_found","deleted":false}` for delete. Deleting removes only the saved WAV file; recognition results already sent to the client are unaffected.
 
 ### Error Codes
 

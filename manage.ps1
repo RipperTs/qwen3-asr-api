@@ -21,7 +21,7 @@ $ComposeFileCpu = Join-Path $ProjectRoot 'docker\docker-compose.cpu.yml'
 $ServiceConfig = Join-Path $ServiceDir 'config.yaml'
 $ServiceConfigExample = Join-Path $ServiceDir 'config.example.yaml'
 $ConfigFile = Join-Path $ServiceDir '.cli_launch_config'
-$ImageName = 'lancelrq/qwen3-asr-service'
+$ImageName = 'registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service'
 $ImageTag = 'latest'
 $ContainerName = 'qwen3-asr-service'
 

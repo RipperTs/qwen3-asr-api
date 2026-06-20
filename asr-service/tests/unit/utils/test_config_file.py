@@ -99,6 +99,11 @@ def test_load_valid_file_maps_dest_keys(service_root):
     assert cf.load_config_file(p) == {"device": "cpu", "enable_punc": True, "port": 9000}
 
 
+def test_stream_recordings_dir_is_valid_config_key(service_root):
+    out = cf.validate_config({"stream_recordings_dir": "data/stream_recordings"})
+    assert out["stream_recordings_dir"] == "data/stream_recordings"
+
+
 def test_load_empty_file_exits(service_root):
     p = _write(service_root, "")
     with pytest.raises(SystemExit, match="顶层键值映射"):

@@ -27,8 +27,8 @@ COPY asr-service/ /app
 COPY docs/ /docs/
 COPY README.md README_zh.md /
 
-# 模型 / 日志挂载目录（vllm 模式无离线任务/声纹库，无需 data/）
-RUN mkdir -p /app/models /app/logs
+# 模型 / 日志 / 持久数据（任务库、声纹库、实时录音）挂载目录
+RUN mkdir -p /app/models /app/logs /app/data
 
 EXPOSE 8765
 

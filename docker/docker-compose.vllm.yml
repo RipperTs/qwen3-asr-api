@@ -1,6 +1,6 @@
 services:
   asr-vllm:
-    image: lancelrq/qwen3-asr-service:latest-vllm
+    image: registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
     container_name: qwen3-asr-vllm
     # build:                                  # 本文件在 docker/ 下，上下文需指向仓库根
     #   context: ..
@@ -8,7 +8,7 @@ services:
     #   args:
     #     VLLM_TAG: v0.14.0
     #   tags:
-    #     - lancelrq/qwen3-asr-service:latest-vllm
+    #     - registry.cn-hangzhou.aliyuncs.com/ripper/qwen3-asr-service:latest-vllm
     ports:
       - "8766:8765"                      # 独立端口，避免与 standard asr(8765) 冲突
     # environment:
@@ -20,7 +20,7 @@ services:
       # vLLM 加载 HF 全精度模型（models/asr/0.6b 或 1.7b）；与 standard 共用同一 models 目录
       - ../asr-service/models:/app/models
       - ../asr-service/logs:/app/logs
-      # SQLite（任务持久化 data/tasks.db、声纹库 data/speakers.db）：vLLM 模式同样支持，挂出以跨重建保留
+      # 持久数据（任务库、声纹库、实时录音 data/stream_recordings）：vLLM 模式同样支持，挂出以跨重建保留
       - ../asr-service/data:/app/data
     deploy:
       resources:
