@@ -100,12 +100,9 @@ async def stream(ws: WebSocket):
             await ws.send_json(ErrorMsg(
                 code="invalid_config", message=str(e), fatal=True).model_dump())
             return
-        # 参数合法但对应功能未启用：非致命软提示（fatal=False 不断连），改进既往静默忽略
+        # 参数合法但对应功能未启用：只记日志，不打扰客户端实时会话。
         if warnings:
-            await ws.send_json(ErrorMsg(
-                code="params_ignored",
-                message="以下参数因对应功能未启用被忽略: " + ", ".join(warnings),
-                fatal=False).model_dump())
+            logger.info(f"[stream] 参数因功能未启用被忽略 sid={sid[:8]} params={', '.join(warnings)}")
         if _recording_manager is not None:
             sample_rate = getattr(session, "audio_fs", start_msg.get("audio_fs", cfg.STREAM_SAMPLE_RATE))
             recorder = _recording_manager.start(

@@ -162,6 +162,31 @@ def test_invalid_config_returns_error_and_releases():
     assert backend.released is True
 
 
+def test_ignored_params_are_logged_only_and_session_continues():
+    class IgnoredParamsSession(FakeSession):
+        def configure(self, msg):
+            self.configured = msg
+            return ["with_words", "with_punc"]
+
+    class IgnoredParamsBackend(FakeBackend):
+        def create_session(self, sid):
+            return IgnoredParamsSession()
+
+    backend = IgnoredParamsBackend()
+    client = _make_client(backend)
+    with client.websocket_connect("/v2/asr/stream") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        ws.send_json({"type": "start", "with_words": True, "with_punc": True})
+        ws.send_bytes(b"\x00\x00")
+        final = ws.receive_json()
+        assert final["type"] == "final"
+        assert final["text"] == "hello"
+        ws.send_json({"type": "stop"})
+        assert ws.receive_json()["type"] == "final"
+        assert ws.receive_json()["type"] == "session.closed"
+    assert backend.released is True
+
+
 def test_frame_too_large_rejected_session_continues(monkeypatch):
     monkeypatch.setattr("app.config.STREAM_MAX_FRAME_BYTES", 8)
     backend = FakeBackend()
