@@ -220,6 +220,55 @@ def test_list_models(openai_client):
     assert body["data"][0]["id"] == "qwen3-asr-1.7b"
 
 
+# ─── chat completions mock ───
+
+def test_chat_completions_mock_non_stream(openai_client):
+    client = openai_client(task_manager=FakeTM())
+    r = client.post(
+        "/compat/openai/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["object"] == "chat.completion"
+    assert body["model"] == "gpt-4o-mini"
+    assert body["choices"][0]["index"] == 0
+    assert body["choices"][0]["message"] == {
+        "role": "assistant",
+        "content": "这是一个模拟的 OpenAI Chat Completions 兼容响应。",
+    }
+    assert body["choices"][0]["finish_reason"] == "stop"
+    assert body["usage"]["total_tokens"] == (
+        body["usage"]["prompt_tokens"] + body["usage"]["completion_tokens"])
+
+
+def test_chat_completions_mock_stream(openai_client):
+    client = openai_client(task_manager=FakeTM())
+    r = client.post(
+        "/compat/openai/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}],
+              "stream": True},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/event-stream")
+    body = r.text
+    assert '"object": "chat.completion.chunk"' in body
+    assert '"role": "assistant"' in body
+    assert '"content": "这是一个模拟的 OpenAI Chat Completions 兼容响应。"' in body
+    assert '"finish_reason": "stop"' in body
+    assert "data: [DONE]" in body
+
+
+def test_chat_completions_auth_missing_token_401(openai_client):
+    client = openai_client(task_manager=FakeTM(), api_key="sk-secret")
+    r = client.post(
+        "/compat/openai/v1/chat/completions",
+        json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "invalid_api_key"
+
+
 # ─── 鉴权（OpenAI 风格 401） ───
 
 def test_auth_missing_token_401(openai_client):

@@ -10,9 +10,10 @@ import json
 import logging
 import os
 import queue
+import time
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -26,6 +27,7 @@ from app.config import MAX_AUDIO_FILE_SIZE, UPLOADS_DIR
 logger = logging.getLogger(__name__)
 
 _VALID_FORMATS = {"json", "text", "srt", "verbose_json", "vtt"}
+_CHAT_MOCK_CONTENT = "这是一个模拟的 OpenAI Chat Completions 兼容响应。"
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 # 运行时依赖（由 init_openai_routes 注入）
@@ -145,6 +147,56 @@ async def _sse_events(events):
         yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
 
+async def create_chat_completion(payload: dict = Body(...)):
+    """Chat Completions 兼容模拟端点：只保证响应结构，不调用真实模型。"""
+    model = str(payload.get("model") or "mock-chat")
+    stream = payload.get("stream") is True
+    if stream:
+        return StreamingResponse(
+            _chat_sse_events(model),
+            media_type="text/event-stream")
+    return _chat_completion_payload(model)
+
+
+def _chat_completion_payload(model: str) -> dict:
+    completion_tokens = len(_CHAT_MOCK_CONTENT)
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": _CHAT_MOCK_CONTENT},
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": completion_tokens,
+            "total_tokens": completion_tokens,
+        },
+    }
+
+
+async def _chat_sse_events(model: str):
+    response_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+    base = {
+        "id": response_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+    }
+    chunks = [
+        {"choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {"content": _CHAT_MOCK_CONTENT}, "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]
+    for chunk in chunks:
+        yield f"data: {json.dumps(base | chunk, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
 async def create_translation(
     file: UploadFile = File(...),
     model: str = Form(...),
@@ -172,5 +224,6 @@ def build_openai_router(prefix: str = "/compat/openai/v1") -> APIRouter:
     dep = [Depends(verify_openai_key)]
     r.add_api_route("/audio/transcriptions", create_transcription, methods=["POST"], dependencies=dep)
     r.add_api_route("/audio/translations", create_translation, methods=["POST"], dependencies=dep)
+    r.add_api_route("/chat/completions", create_chat_completion, methods=["POST"], dependencies=dep)
     r.add_api_route("/models", list_models, methods=["GET"], dependencies=dep)
     return r
