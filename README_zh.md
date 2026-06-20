@@ -1,12 +1,4 @@
-# Qwen3-ASR Service
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![GitHub stars](https://img.shields.io/github/stars/LanceLRQ/qwen3-asr-service?style=flat-square&logo=github)](https://github.com/LanceLRQ/qwen3-asr-service/stargazers)
-[![Docker Pulls](https://img.shields.io/docker/pulls/lancelrq/qwen3-asr-service?style=flat-square&logo=docker)](https://hub.docker.com/r/lancelrq/qwen3-asr-service)
-[![Docker Image Size](https://img.shields.io/docker/image-size/lancelrq/qwen3-asr-service/latest?style=flat-square&logo=docker)](https://hub.docker.com/r/lancelrq/qwen3-asr-service)
-[![Docker Build](https://img.shields.io/github/actions/workflow/status/LanceLRQ/qwen3-asr-service/docker-publish.yml?style=flat-square&logo=githubactions&logoColor=white&label=Docker%20Build)](https://github.com/LanceLRQ/qwen3-asr-service/actions/workflows/docker-publish.yml)
-[![Powered by Qwen3-ASR](https://img.shields.io/badge/Powered%20by-Qwen3--ASR-ff6a00?style=flat-square)](https://github.com/QwenLM)
+# Qwen3-ASR API
 
 **中文** | [English](README.md)
 
