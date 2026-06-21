@@ -47,6 +47,11 @@
 | `--api-key` | 字符串 | 无 | API 密钥，设置后启用 Bearer Token 认证（覆盖 `ASR_API_KEY` 环境变量） |
 | `--max-segment` | 秒数 | `5` | VAD 切片合并最大时长 |
 | `--max-queue-size` | 数字 | `100` | 离线任务队列最大长度 |
+| `--offline-worker-count` | 数字 | `1` | 离线任务 worker 数；默认 1 保持旧串行处理。仅支持 `batch_transcribe` 的 ASR 后端可调大，调大后多个任务可同时推进并在 ASR 阶段进入全局合批调度；不支持时启动阶段自动退回 1 |
+| `--offline-asr-batch-size` | 数字 | `32` | 全局离线 ASR 合批上限；只合并多个任务的 chunk，不改变单个 chunk 的音频内容、语言参数或时间戳解析 |
+| `--offline-batch-wait-ms` | 毫秒 | `100` | 为跨任务合批等待的最大窗口；调大可提高吞吐但会增加短任务等待延迟 |
+
+> 准确度优先：动态合批只改变多个 chunk 进入 ASR 的批次组织方式，不改变 VAD 切块、chunk 音频、语言参数、对齐开关和结果解析。不同 `language` 的 chunk 不混批。OpenVINO CPU 后端当前不支持 `batch_transcribe`，即使配置 `offline_worker_count > 1` 也会退回单 worker。
 
 ### 实时转写
 

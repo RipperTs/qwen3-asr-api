@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [
+    "standard 离线任务调度",
+    "ASR pipeline",
+    "ASR 引擎调用入口",
+    "启动配置和文档"
+  ],
+  "owners": [
+    "TaskManager owns task lifecycle and worker concurrency",
+    "ASRBatchScheduler owns cross-task ASR batching",
+    "ASRPipeline owns per-task audio processing and result assembly"
+  ],
+  "invariants": [
+    "不改变 VAD 切块和 chunk 音频内容",
+    "不同 language 不混批",
+    "批量失败仍回退逐条识别",
+    "默认 offline_worker_count=1 保持旧串行行为"
+  ],
+  "compatBoundary": "新能力只在 offline_worker_count > 1 时启用；公开 API 响应结构保持不变。",
+  "nonGoals": [
+    "模型实例池",
+    "真实 GPU 压测参数调优",
+    "vLLM 模式改造"
+  ]
+}

@@ -4,6 +4,7 @@
 行为依源码确认（task_manager.py:41/64/69/92/98/125/130/187）。
 """
 import queue
+import threading
 
 import pytest
 
@@ -153,6 +154,32 @@ def test_is_stopping_toggles_on_shutdown(tm_factory):
     assert tm.is_stopping is True
 
 
+def test_shutdown_uses_shared_worker_join_budget(tm_factory, monkeypatch):
+    clock = {"now": 100.0}
+    monkeypatch.setattr("app.runtime.task_manager.time.monotonic", lambda: clock["now"])
+
+    class FakeWorker:
+        def __init__(self):
+            self.timeouts = []
+
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            self.timeouts.append(timeout)
+            if timeout:
+                clock["now"] += timeout
+
+    tm = tm_factory(worker_count=3)
+    workers = [FakeWorker(), FakeWorker(), FakeWorker()]
+    tm._worker_threads = workers
+
+    assert tm.shutdown() is False
+
+    timeouts = [timeout for worker in workers for timeout in worker.timeouts]
+    assert sum(timeouts) <= 5.1
+
+
 # ─── worker 集成（启动线程，process_fn 假实现）───
 
 def test_worker_completes_task(tm_factory):
@@ -163,6 +190,24 @@ def test_worker_completes_task(tm_factory):
     assert task["result"] == {"full_text": "hi"}
     assert task["progress"] == 1.0
     assert task["finished_at"] is not None
+
+
+def test_worker_count_allows_parallel_processing(tm_factory):
+    barrier = threading.Barrier(2)
+    processed = []
+
+    def processor(task):
+        processed.append(task["task_id"])
+        barrier.wait(timeout=2)
+        return {"task_id": task["task_id"]}
+
+    tm = tm_factory(start=True, processor=processor, worker_count=2)
+    first = tm.submit("/tmp/a.wav")
+    second = tm.submit("/tmp/b.wav")
+
+    assert wait_for(lambda: len(processed) == 2)
+    assert wait_for(lambda: tm.get_task(first)["status"] == "completed")
+    assert wait_for(lambda: tm.get_task(second)["status"] == "completed")
 
 
 def test_worker_failure_sets_generic_error(tm_factory):

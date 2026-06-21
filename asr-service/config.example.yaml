@@ -18,6 +18,9 @@ web: true                   # /web-ui 演示页
 api_key: ""                 # 留空 = 不鉴权（本行会覆盖 ASR_API_KEY 环境变量；想用环境变量请删除本行）
 max_segment: 5              # VAD 切片合并最大时长（秒）
 # max_queue_size: 100       # 任务队列最大长度
+# offline_worker_count: 1   # 离线任务 worker 数；仅支持 batch_transcribe 的 ASR 后端可 >1，否则启动时退回 1
+# offline_asr_batch_size: 32 # 全局离线 ASR 合批上限；合并多个任务的 chunk，不改变单个 chunk 内容
+# offline_batch_wait_ms: 100 # 为跨任务合批等待的最大窗口（毫秒）；越大吞吐越好但短任务延迟越高
 
 # ── 实时转写 ──
 enable_stream: true         # WS /v2/asr/stream（standard 模式）

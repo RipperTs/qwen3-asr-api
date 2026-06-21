@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "artifactKey": "offline-dynamic-batching-evidence",
+  "type": "test-and-review-evidence",
+  "source": "docs/aegis/work/2026-06-21-offline-dynamic-batching/90-evidence.md",
+  "summary": "阶段 1-3 聚焦测试、全量单元测试、py_compile、git diff --check 和 Aegis workspace check 均通过；真实 GPU 压测未在本地执行。",
+  "verifier": "Codex"
+}

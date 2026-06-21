@@ -119,6 +119,27 @@ ARG_SPECS = (
         help_en=f"Max task queue length (default: {cfg.MAX_QUEUE_SIZE})",
     ),
     ArgSpec(
+        key="offline_worker_count", flags=("--offline-worker-count",),
+        default=None, type=int, group="离线任务",
+        help=f"离线任务 worker 数；默认 1 保持旧串行行为 (default: {cfg.OFFLINE_WORKER_COUNT})",
+        help_en=f"Offline task worker count; default 1 preserves serial behavior "
+                f"(default: {cfg.OFFLINE_WORKER_COUNT})",
+    ),
+    ArgSpec(
+        key="offline_asr_batch_size", flags=("--offline-asr-batch-size",),
+        default=None, type=int, group="离线任务",
+        help=f"全局离线 ASR 合批上限；只合并 chunk，不改变识别内容 (default: {cfg.OFFLINE_ASR_BATCH_SIZE})",
+        help_en=f"Global offline ASR batch limit; batches chunks without changing "
+                f"recognition content (default: {cfg.OFFLINE_ASR_BATCH_SIZE})",
+    ),
+    ArgSpec(
+        key="offline_batch_wait_ms", flags=("--offline-batch-wait-ms",),
+        default=None, type=int, group="离线任务",
+        help=f"离线 ASR 为跨任务合批等待的最大窗口，毫秒 (default: {cfg.OFFLINE_BATCH_WAIT_MS})",
+        help_en=f"Max wait window for cross-task offline ASR batching, in ms "
+                f"(default: {cfg.OFFLINE_BATCH_WAIT_MS})",
+    ),
+    ArgSpec(
         key="enable_stream", flags=("--enable-stream",), default=False, type=bool,
         group="实时转写",
         help="挂载实时转写端点 WS /v2/asr/stream（路线B，standard 模式）",

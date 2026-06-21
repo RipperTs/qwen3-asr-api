@@ -29,6 +29,7 @@ class ASRPipeline:
         speaker_engine=None,
         speaker_service=None,
         priority_gate=None,
+        asr_scheduler=None,
     ):
         self.asr = asr_engine
         self.vad = vad_engine
@@ -36,6 +37,7 @@ class ASRPipeline:
         self.speaker = speaker_engine
         self.speaker_service = speaker_service    # 声纹库联动（None = 未启用）
         self.priority_gate = priority_gate
+        self.asr_scheduler = asr_scheduler
 
     def run(
         self,
@@ -143,6 +145,7 @@ class ASRPipeline:
             elif hasattr(self.asr, "batch_transcribe"):
                 segments = self._transcribe_batched(
                     chunks, total_chunks, language, cancelled, progress_callback,
+                    task_id=task_id,
                 )
             else:
                 segments = self._transcribe_sequential(
@@ -251,6 +254,7 @@ class ASRPipeline:
         language: str | None,
         cancelled,
         progress_callback,
+        task_id: str | None = None,
     ) -> list[dict]:
         """按 batch 分批调用 ASR 推理，每批之间更新进度和检查取消"""
         batch_size = max(1, int(getattr(self.asr, "batch_size", None) or cfg.ASR_BATCH_SIZE))
@@ -286,47 +290,46 @@ class ASRPipeline:
                 f"chunk {batch_start + 1}-{batch_end}/{total_chunks}"
             )
 
-            try:
-                batch_results = self.asr.batch_transcribe(
-                    audio_paths=batch_paths,
-                    language=language,
+            if self.asr_scheduler is not None:
+                segments.extend(
+                    self._transcribe_batch_with_scheduler(
+                        batch_chunks,
+                        batch_start,
+                        total_chunks,
+                        language,
+                        cancelled,
+                        progress_callback,
+                        task_id,
+                    )
                 )
-            except Exception as e:
-                logger.error(f"批次推理失败，回退到逐条处理: {e}")
-                fallback = self._transcribe_sequential(
-                    chunks[batch_start:], total_chunks, language,
-                    cancelled, progress_callback,
-                )
-                segments.extend(fallback)
-                break
+            else:
+                try:
+                    batch_results = self.asr.batch_transcribe(
+                        audio_paths=batch_paths,
+                        language=language,
+                    )
+                except Exception as e:
+                    logger.error(f"批次推理失败，回退到逐条处理: {e}")
+                    fallback = self._transcribe_sequential(
+                        chunks[batch_start:], total_chunks, language,
+                        cancelled, progress_callback, start_index=batch_start,
+                    )
+                    segments.extend(fallback)
+                    break
 
-            if len(batch_results) != len(batch_chunks):
-                logger.error(
-                    f"批次结果数不匹配: 期望 {len(batch_chunks)}, 得到 {len(batch_results)}，"
-                    "回退到逐条处理"
-                )
-                fallback = self._transcribe_sequential(
-                    chunks[batch_start:], total_chunks, language,
-                    cancelled, progress_callback,
-                )
-                segments.extend(fallback)
-                break
+                if len(batch_results) != len(batch_chunks):
+                    logger.error(
+                        f"批次结果数不匹配: 期望 {len(batch_chunks)}, 得到 {len(batch_results)}，"
+                        "回退到逐条处理"
+                    )
+                    fallback = self._transcribe_sequential(
+                        chunks[batch_start:], total_chunks, language,
+                        cancelled, progress_callback, start_index=batch_start,
+                    )
+                    segments.extend(fallback)
+                    break
 
-            for chunk_info, result in zip(batch_chunks, batch_results):
-                text = self._extract_text([result])
-                words = self._extract_words([result], chunk_info["offset_sec"])
-
-                segment = {
-                    "start": chunk_info["offset_sec"],
-                    "end": chunk_info["offset_sec"] + chunk_info["duration_sec"],
-                    "text": text,
-                }
-                if self.asr.align_enabled and words:
-                    segment["words"] = words
-                if chunk_info.get("split_after"):
-                    segment["split_after"] = True
-                if text.strip():
-                    segments.append(segment)
+                segments.extend(self._build_segments_from_batch(batch_chunks, batch_results))
 
             processed = batch_end
             logger.info(
@@ -337,6 +340,96 @@ class ASRPipeline:
 
         return segments
 
+    def _transcribe_batch_with_scheduler(
+        self,
+        batch_chunks: list[dict],
+        batch_start: int,
+        total_chunks: int,
+        language: str | None,
+        cancelled,
+        progress_callback,
+        task_id: str | None,
+    ) -> list[dict]:
+        """经全局 ASR scheduler 转写一批 chunk。"""
+        from app.runtime.offline_batch_scheduler import ChunkJob
+
+        scheduler_task_id = task_id or "inline"
+        jobs = [
+            ChunkJob(
+                task_id=scheduler_task_id,
+                index=batch_start + offset,
+                path=chunk_info["path"],
+                offset_sec=chunk_info["offset_sec"],
+                duration_sec=chunk_info["duration_sec"],
+                language=language,
+                split_after=bool(chunk_info.get("split_after")),
+            )
+            for offset, chunk_info in enumerate(batch_chunks)
+        ]
+
+        segments = []
+        results = self.asr_scheduler.submit_many(jobs)
+        for chunk_info, job, result in zip(
+            batch_chunks,
+            jobs,
+            results,
+        ):
+            if getattr(result, "cancelled", False):
+                logger.info(f"chunk {job.index} 调度识别已取消，跳过")
+                continue
+            if result.error:
+                segment = self._retry_scheduler_chunk(chunk_info, job, result.error)
+                if segment is not None:
+                    segments.append(segment)
+                continue
+            segment = self._build_segment_from_results(chunk_info, result.results or [])
+            if segment is not None:
+                segments.append(segment)
+        return segments
+
+    def _retry_scheduler_chunk(self, chunk_info: dict, job, error: str) -> dict | None:
+        """Retry one failed scheduler chunk without bypassing the scheduler owner."""
+        logger.warning(f"chunk {job.index} 调度识别失败，重新提交单条调度: {error}")
+        retry = self.asr_scheduler.submit(job)
+        if getattr(retry, "cancelled", False):
+            logger.info(f"chunk {job.index} 单条调度已取消，跳过")
+            return None
+        if retry.error:
+            logger.error(f"chunk {job.index} 单条调度失败: {retry.error}")
+            return {
+                "start": chunk_info["offset_sec"],
+                "end": chunk_info["offset_sec"] + chunk_info["duration_sec"],
+                "text": "[识别失败]",
+            }
+        return self._build_segment_from_results(chunk_info, retry.results or [])
+
+    def _transcribe_sequential_chunk(
+        self,
+        chunk_info: dict,
+        index: int,
+        total_chunks: int,
+        language: str | None,
+    ) -> dict | None:
+        """逐条识别一个 chunk，供串行路径和 scheduler fallback 共用。"""
+        logger.info(
+            f"[Pipeline] ASR 处理中: chunk {index + 1}/{total_chunks} "
+            f"({chunk_info['offset_sec']:.1f}s ~ "
+            f"{chunk_info['offset_sec'] + chunk_info['duration_sec']:.1f}s)"
+        )
+        try:
+            results = self.asr.transcribe(
+                audio_path=chunk_info["path"],
+                language=language,
+            )
+            return self._build_segment_from_results(chunk_info, results)
+        except Exception as e:
+            logger.error(f"chunk {index} 识别失败: {e}")
+            return {
+                "start": chunk_info["offset_sec"],
+                "end": chunk_info["offset_sec"] + chunk_info["duration_sec"],
+                "text": "[识别失败]",
+            }
+
     def _transcribe_sequential(
         self,
         chunks: list[dict],
@@ -344,10 +437,12 @@ class ASRPipeline:
         language: str | None,
         cancelled,
         progress_callback,
+        start_index: int = 0,
     ) -> list[dict]:
         """逐 chunk 串行 ASR 识别（fallback 路径）"""
         segments = []
-        for i, chunk_info in enumerate(chunks):
+        for offset, chunk_info in enumerate(chunks):
+            i = start_index + offset
             if cancelled and cancelled():
                 logger.info(f"[Pipeline] 任务已取消，已完成 {i}/{total_chunks} 个 chunk")
                 break
@@ -356,42 +451,45 @@ class ASRPipeline:
                     logger.info(f"[Pipeline] 任务已取消，已完成 {i}/{total_chunks} 个 chunk")
                     break
 
-            logger.info(
-                f"[Pipeline] ASR 处理中: chunk {i + 1}/{total_chunks} "
-                f"({chunk_info['offset_sec']:.1f}s ~ "
-                f"{chunk_info['offset_sec'] + chunk_info['duration_sec']:.1f}s)"
+            segment = self._transcribe_sequential_chunk(
+                chunk_info,
+                i,
+                total_chunks,
+                language,
             )
-            try:
-                results = self.asr.transcribe(
-                    audio_path=chunk_info["path"],
-                    language=language,
-                )
-                text = self._extract_text(results)
-                words = self._extract_words(results, chunk_info["offset_sec"])
-
-                segment = {
-                    "start": chunk_info["offset_sec"],
-                    "end": chunk_info["offset_sec"] + chunk_info["duration_sec"],
-                    "text": text,
-                }
-                if self.asr.align_enabled and words:
-                    segment["words"] = words
-                if chunk_info.get("split_after"):
-                    segment["split_after"] = True
-
-                if text.strip():
-                    segments.append(segment)
-            except Exception as e:
-                logger.error(f"chunk {i} 识别失败: {e}")
-                segments.append({
-                    "start": chunk_info["offset_sec"],
-                    "end": chunk_info["offset_sec"] + chunk_info["duration_sec"],
-                    "text": "[识别失败]",
-                })
+            if segment is not None:
+                segments.append(segment)
 
             if progress_callback:
                 progress_callback(0.1 + 0.8 * (i + 1) / total_chunks)
         return segments
+
+    def _build_segments_from_batch(self, chunks: list[dict], batch_results: list) -> list[dict]:
+        """把批量 ASR 输出转换为处理块 segments，保持 chunk 顺序和时间偏移。"""
+        segments = []
+        for chunk_info, result in zip(chunks, batch_results):
+            segment = self._build_segment_from_results(chunk_info, [result])
+            if segment is not None:
+                segments.append(segment)
+        return segments
+
+    def _build_segment_from_results(self, chunk_info: dict, results) -> dict | None:
+        """把单个 chunk 的 ASR 结果转换为 segment；空文本保持旧行为：不输出。"""
+        text = self._extract_text(results)
+        if not text.strip():
+            return None
+
+        words = self._extract_words(results, chunk_info["offset_sec"])
+        segment = {
+            "start": chunk_info["offset_sec"],
+            "end": chunk_info["offset_sec"] + chunk_info["duration_sec"],
+            "text": text,
+        }
+        if self.asr.align_enabled and words:
+            segment["words"] = words
+        if chunk_info.get("split_after"):
+            segment["split_after"] = True
+        return segment
 
     def _run_diarization(self, wav_path: str, vad_segments: list[tuple[int, int]]):
         """说话人分离：原始 VAD 段（合并前）滑窗 → embedding → 全局聚类。

@@ -47,6 +47,11 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 | `--api-key` | String | None | API key; enables Bearer Token auth (overrides the `ASR_API_KEY` env var) |
 | `--max-segment` | Seconds | `5` | Max VAD segment merge duration |
 | `--max-queue-size` | Number | `100` | Max offline task queue length |
+| `--offline-worker-count` | Number | `1` | Offline task worker count; default 1 preserves serial processing. Only ASR backends with `batch_transcribe` can use values above 1; raising it lets multiple tasks advance concurrently and enter the global ASR batch scheduler. Unsupported backends fall back to 1 at startup. |
+| `--offline-asr-batch-size` | Number | `32` | Global offline ASR batch limit; batches chunks from multiple tasks without changing each chunk's audio content, language parameter, or timestamp parsing. |
+| `--offline-batch-wait-ms` | Milliseconds | `100` | Max wait window for cross-task batching; larger values may improve throughput but increase short-task latency. |
+
+> Accuracy first: dynamic batching only changes how chunks are grouped before ASR. It does not change VAD slicing, chunk audio, language parameters, alignment settings, or result parsing. Chunks with different `language` values are not mixed in the same ASR call. The OpenVINO CPU backend currently has no `batch_transcribe`, so `offline_worker_count > 1` falls back to one worker there.
 
 ### Real-time Transcription
 

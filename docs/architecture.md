@@ -107,5 +107,5 @@ asr-service/
 
 - **引擎模式**：每个模型（ASR/VAD/标点/对齐）封装为独立引擎，加载失败按重要性降级（VAD/ASR 失败终止启动，标点失败降级关闭）。
 - **v1/v2 路由工厂**：同一组控制器函数注册到两个前缀，协议变更全部 additive，旧客户端零破坏。
-- **任务队列**：单工作线程串行处理 + 线程池真超时；可选 write-through 持久化（[tasks.db](configuration.md#离线任务持久化tasksdb)），持久化故障不影响任务执行。
+- **任务队列**：默认单工作线程串行处理 + 线程池真超时；支持 `batch_transcribe` 的 ASR 后端可通过离线 worker 配置让多个任务同时推进。ASR 阶段由全局动态合批调度器统一调用单模型 `batch_transcribe`，只合并多个任务的 chunk，不改变单个 chunk 的音频内容、语言参数和结果解析；VAD/标点/说话人 embedding 等共享推理入口由各 engine 自身 `_infer_lock` 串行保护；不支持批处理的后端启动时退回单 worker；可选 write-through 持久化（[tasks.db](configuration.md#离线任务持久化tasksdb)），持久化故障不影响任务执行。
 - **配置链**：启动参数单一 schema 同时驱动 argparse、config.yaml 校验与示例文件，消除多处默认值漂移（详见 [配置文档](configuration.md)）。
