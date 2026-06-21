@@ -96,6 +96,8 @@ def run_vllm_offline(engine, task, *, progress_callback=None, cancelled=None,
 
 _PROGRESS_TRANSCRIBE_LO = 0.1
 _PROGRESS_TRANSCRIBE_HI = 0.85
+_TEXT_OVERLAP_MIN_CHARS = 5
+_TEXT_OVERLAP_MAX_CHARS = 120
 
 
 def _positive_float(value, fallback: float) -> float:
@@ -106,13 +108,8 @@ def _positive_float(value, fallback: float) -> float:
     return number if number > 0 else fallback
 
 
-def _offline_chunk_sec(priority_gate=None) -> float:
-    chunk_sec = _positive_float(cfg.VLLM_OFFLINE_CHUNK_SEC, 1.0)
-    if priority_gate is None:
-        return chunk_sec
-    realtime_chunk_sec = _positive_float(
-        cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC, 1.0)
-    return min(chunk_sec, realtime_chunk_sec)
+def _offline_chunk_sec() -> float:
+    return _positive_float(cfg.VLLM_OFFLINE_CHUNK_SEC, 1.0)
 
 
 def _transcribe_progressive(engine, wav_path, duration, language, want_words,
@@ -124,7 +121,7 @@ def _transcribe_progressive(engine, wav_path, duration, language, want_words,
     →与整段转写质量一致，且每次只对齐一块、峰值显存随块走。词时间戳按块 offset 归到绝对时间。
     """
     import soundfile as sf
-    chunk_sec = _offline_chunk_sec(priority_gate)
+    chunk_sec = _offline_chunk_sec()
     wav, sr = sf.read(wav_path, dtype="float32")
     if wav.ndim > 1:                                  # 兜底：多声道取均值（阶段0已单声道）
         wav = wav.mean(axis=1)
@@ -144,14 +141,75 @@ def _transcribe_progressive(engine, wav_path, duration, language, want_words,
             if not priority_gate.wait_realtime_clear(cancelled=cancelled):
                 return None
         results = engine.transcribe((cwav, sr), language=language, with_words=want_words)
-        texts.append(extract_text(results))
+        text = extract_text(results)
+        chunk_words = None
         if want_words:
-            w = extract_words(results, float(offset))
-            if w:
-                words.extend(w)
+            chunk_words = extract_words(results, float(offset))
+        _append_chunk_result(texts, words, text, chunk_words)
         if progress_callback:
             progress_callback(round(_PROGRESS_TRANSCRIBE_LO + span * (i + 1) / total, 3))
     return "".join(texts).strip(), (words or None)
+
+
+def _append_chunk_result(texts: list, words: list, text: str, chunk_words: list | None) -> None:
+    """Append one vLLM offline chunk while removing duplicated adjacent boundary text."""
+    text = text or ""
+    if not text.strip():
+        return
+    previous_tail = _joined_tail(texts, _TEXT_OVERLAP_MAX_CHARS)
+    cut = _chunk_prefix_overlap(previous_tail, text)
+    if cut:
+        text, chunk_words = _trim_chunk_prefix(text, chunk_words, cut)
+    if not text.strip():
+        return
+    texts.append(text)
+    if chunk_words:
+        words.extend(chunk_words)
+
+
+def _joined_tail(parts: list[str], max_chars: int) -> str:
+    tail = []
+    remaining = max_chars
+    for part in reversed(parts):
+        if len(part) >= remaining:
+            tail.append(part[-remaining:])
+            break
+        tail.append(part)
+        remaining -= len(part)
+    return "".join(reversed(tail))
+
+
+def _chunk_prefix_overlap(previous_text: str, current_text: str) -> int:
+    """Return how many chars to trim from current_text when it repeats previous suffix."""
+    if not previous_text or not current_text:
+        return 0
+    previous = previous_text.rstrip()
+    current = current_text.lstrip()
+    leading = len(current_text) - len(current)
+    hi = min(len(previous), len(current), _TEXT_OVERLAP_MAX_CHARS)
+    for n in range(hi, _TEXT_OVERLAP_MIN_CHARS - 1, -1):
+        if previous[-n:] == current[:n]:
+            return leading + n
+    return 0
+
+
+def _trim_chunk_prefix(text: str, chunk_words: list | None, cut: int) -> tuple[str, list | None]:
+    trimmed = text[cut:].lstrip()
+    if not chunk_words:
+        return trimmed, chunk_words
+
+    kept = []
+    cursor = 0
+    for word in chunk_words:
+        token = word.get("text", "")
+        idx = text.find(token, cursor) if token else -1
+        if idx < 0:
+            idx = cursor
+        end = idx + len(token)
+        if end > cut:
+            kept.append(word)
+        cursor = end
+    return trimmed, kept
 
 
 def _collect_warnings(engine, opts: dict, identify_speakers: bool, *,

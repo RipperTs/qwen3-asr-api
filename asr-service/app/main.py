@@ -159,8 +159,6 @@ def _apply_cli_config(args):
         cfg.STREAM_ASR_CONCURRENCY = args.stream_asr_concurrency
     if getattr(args, "realtime_priority_offline_batch_size", None) is not None:
         cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE = args.realtime_priority_offline_batch_size
-    if getattr(args, "realtime_priority_vllm_offline_chunk_sec", None) is not None:
-        cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC = args.realtime_priority_vllm_offline_chunk_sec
     cfg.STREAM_SAVE_AUDIO = getattr(args, "stream_save_audio", False)
     if getattr(args, "stream_recordings_dir", None) is not None:
         cfg.STREAM_RECORDINGS_DIR = args.stream_recordings_dir
@@ -192,6 +190,8 @@ def _apply_cli_config(args):
         cfg.VLLM_ALIGN_DEVICE = args.vllm_align_device
     if getattr(args, "vllm_infer_batch_size", None) is not None:
         cfg.VLLM_INFER_BATCH_SIZE = args.vllm_infer_batch_size
+    if getattr(args, "vllm_offline_chunk_sec", None) is not None:
+        cfg.VLLM_OFFLINE_CHUNK_SEC = args.vllm_offline_chunk_sec
     if getattr(args, "vllm_segment_gap_ms", None) is not None:
         cfg.VLLM_SEGMENT_GAP_MS = args.vllm_segment_gap_ms
     cfg.ENABLE_SPEAKER = getattr(args, "enable_speaker", False)

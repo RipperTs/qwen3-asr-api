@@ -47,7 +47,7 @@
   - vLLM 模式实时兼容**随兼容开关自动挂载、无需 `--enable-stream`**（与 standard 的唯一启动差异）。
 
 ### 2.5 长音频处理（vLLM 专属新增）
-- 离线超过 `vllm_offline_chunk_sec`（默认 180s）的音频按**静音边界逐块转写**（块拼接=原音频）；实时优先启用时会再受 `realtime_priority_vllm_offline_chunk_sec`（默认 30s）限制：
+- 离线超过 `vllm_offline_chunk_sec`（默认 180s）的音频按**静音边界逐块转写**（块拼接=原音频）；实时任务到来时，离线会在当前块结束后的下一个块边界让路：
   - **进度平滑**：转写阶段随块上报（不再 10%→90% 直跳）。
   - **块间可取消**：长任务可中途响应取消。
   - **显存收敛**：每次只对齐 1 块，**根治长音频对齐 `CUDA out of memory`**。
@@ -87,6 +87,7 @@
 | `vllm_enable_align` / `--vllm-enable-align`·`--no-vllm-align` | 开 | 离线词级时间戳（加载对齐模型） |
 | `vllm_align_device` / `--vllm-align-device` | `cuda` | 对齐器设备；长音频 OOM 时改 `cpu` |
 | `vllm_infer_batch_size` / `--vllm-infer-batch-size` | `4` | 一次对齐/ASR 的音频块数（`-1` 易 OOM） |
+| `vllm_offline_chunk_sec` / `--vllm-offline-chunk-sec` | `180` | 离线逐块转写切块时长（秒）；调小可减少实时等待但会降低离线吞吐 |
 | `vllm_segment_gap_ms` / `--vllm-segment-gap-ms` | `500` | 离线分段：相邻词间隙断句阈值 |
 
 ### 仅配置文件项（无 CLI）
@@ -96,7 +97,6 @@
 | `vllm_unfixed_chunk_num` | `2` | 流式起始不取历史当前缀的块数（冷启动稳定） |
 | `vllm_unfixed_token_num` | `5` | 起始块后回滚末 K token 当前缀（降抖动） |
 | `vllm_energy_floor_dbfs` | `-45.0` | 流式能量端点门限（dBFS） |
-| `vllm_offline_chunk_sec` | `180` | 离线逐块转写切块时长（秒）；实时优先启用时还会受 `realtime_priority_vllm_offline_chunk_sec` 限制 |
 
 > 说话人（`--enable-speaker*`）、兼容接口（`--enable-openai-api` / `--enable-dashscope-api`）等开关 **standard 已有**，vLLM 模式复用，非新增。
 

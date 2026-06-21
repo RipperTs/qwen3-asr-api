@@ -56,7 +56,6 @@
 | `--max-stream-sessions` | 数字 | `16` | 实时最大并发会话数（超额连接以 1013 关闭） |
 | `--stream-asr-concurrency` | 数字 | `1` | 实时 ASR 解码并发上限（模型层有推理锁，>1 无收益） |
 | `--realtime-priority-offline-batch-size` | 数字 | `4` | 实时优先启用时 standard 离线 ASR 单批上限；调小可减少实时等待但会降低离线吞吐 |
-| `--realtime-priority-vllm-offline-chunk-sec` | 秒 | `30` | 实时优先启用时 vLLM 离线切块上限；调小可减少实时等待但会降低离线吞吐 |
 
 ### 智能远场过滤
 
@@ -150,6 +149,7 @@ volumes:
 | `--vllm-enable-align` / `--no-vllm-align` | - | 开启 | 离线 `/v2/asr` 词级时间戳：加载对齐模型（关闭省显存、无 words） |
 | `--vllm-align-device` | `cuda` / `cpu` | `cuda` | 对齐器加载设备；其显存**在 `gpu_memory_utilization` 预算之外**，长音频对齐 OOM 时改 `cpu`（float32，慢但无 GPU 争用） |
 | `--vllm-infer-batch-size` | 数字 | `4` | 一次对齐/ASR 的音频块数（块 ≤180s）；`-1`=全部一次（长音频对齐前向激活叠加易 OOM），调小省显存、长音频仍 OOM 可降到 `1` |
+| `--vllm-offline-chunk-sec` | 秒 | `180` | 离线逐块转写切块时长；实时任务到来时最多等待当前离线块完成，调小可减少实时等待但会降低离线吞吐 |
 | `--vllm-segment-gap-ms` | 毫秒 | `500` | 离线分段：相邻词间隙 > 此值断句（无 FSMN，以词间隙替代） |
 
 **仅配置文件可设（无对应 CLI，写入 `config.yaml`）：**
@@ -159,7 +159,6 @@ volumes:
 | `vllm_unfixed_chunk_num` | `2` | 流式起始不拿历史当前缀的块数（冷启动稳定） |
 | `vllm_unfixed_token_num` | `5` | 起始块之后回滚末 K token 当前缀（降抖动） |
 | `vllm_energy_floor_dbfs` | `-45.0` | 流式能量端点门限（dBFS），高于此判为语音/句开始 |
-| `vllm_offline_chunk_sec` | `180` | 离线逐块转写切块时长（秒）；实时优先启用时会再受 `realtime_priority_vllm_offline_chunk_sec` 限制（详见下方[长音频与进度](#vllm-原生流式模式)） |
 
 ### 配置文件元参数
 
@@ -288,7 +287,7 @@ api_key: "sk-your-key"
 - **标点**：Qwen3-ASR 模型原生输出（已含标点），无法单独关闭；请求 `with_punc=false` 仅记入 `warnings`。
 - **词级时间戳**：`--vllm-enable-align`（默认开）经 ForcedAligner 产出，与 standard 同款；`--no-vllm-align` 可关以省显存。
   - ⚠️ **长音频对齐 OOM**：对齐器是主进程内的独立 transformers 模型，其显存**不计入 `gpu_memory_utilization`**（该参数只约束 vLLM EngineCore 子进程）。`transcribe` 内部按 ≤180s 切块，但默认（`max_inference_batch_size=-1`）会把一个文件的**全部块一次性**喂对齐器前向——长音频（如 30 分钟≈10 块）激活叠加即 `CUDA out of memory`（短音频只 1 块、不受影响）。对策（按推荐序）：① **`--vllm-infer-batch-size`**（默认已改为 `4`）逐批对齐，峰值显存随批大小线性下降，仍在 GPU、最快；长音频仍 OOM 则降到 `1`；② `--vllm-align-device cpu` 把对齐器移到 CPU（无 GPU 争用，稳但慢）；③ 降 `--gpu-memory-utilization` 留更多 GPU 余量；④ `--no-vllm-align` 放弃词级时间戳。
-- **长音频与进度**：离线对超过 `vllm_offline_chunk_sec`（默认 180s）的音频按静音边界**逐块转写**，转写进度（0.1→0.85）随块实时更新、并可在块间响应取消（短音频整段直转）。块由 qwen_asr 同款切法产生、拼接=原音频，质量与整段一致；调小 `vllm_offline_chunk_sec` 可让进度更细、峰值显存更省。
+- **长音频与进度**：离线对超过 `vllm_offline_chunk_sec`（默认 180s）的音频按静音边界**逐块转写**，转写进度（0.1→0.85）随块实时更新、并可在块间响应取消（短音频整段直转）。块由 qwen_asr 同款切法产生、拼接=原音频；调小 `vllm_offline_chunk_sec` 可让进度更细、实时等待更短、峰值显存更省，但会降低离线吞吐。
 - **说话人分离/识别**：`--enable-speaker`（+ 声纹库 `--enable-speaker-db`）后离线 `segments[].speaker` / `speaker_name` / `speakers` 字段与 standard 一致；引擎为 CAM++（CPU、torch，非 funasr），**滑窗语音区间用能量 VAD 替代 FSMN-VAD**（边界较粗）。未开启时请求 `diarize`/`identify_speakers` 记入 `warnings`。需额外依赖 `scipy`/`scikit-learn`/`modelscope`（或预挂 CAM++ 模型目录），见 [requirements-vllm.txt](../asr-service/requirements-vllm.txt)。实时流式仍无说话人。
 > 需要 FSMN 精分段 / CT-Transformer 标点 / 实时说话人的高保真，请用 `standard` 模式。
 

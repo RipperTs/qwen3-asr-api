@@ -355,12 +355,12 @@ def test_parse_and_apply_vllm_args(monkeypatch):
         "prog", "--no-config", "--serve-mode", "vllm",
         "--gpu-memory-utilization", "0.7", "--vllm-chunk-size-sec", "1.5",
         "--vllm-max-utterance-sec", "30", "--vllm-concurrency", "2",
-        "--vllm-end-silence-ms", "600",
+        "--vllm-end-silence-ms", "600", "--vllm-offline-chunk-sec", "90",
     ])
     saved = {k: getattr(cfg, k) for k in (
         "VLLM_GPU_MEMORY_UTILIZATION", "VLLM_CHUNK_SIZE_SEC", "VLLM_MAX_UTTERANCE_SEC",
-        "VLLM_CONCURRENCY", "VLLM_END_SILENCE_MS", "MODEL_SOURCE", "MAX_SEGMENT_DURATION",
-        "SERVE_MODE", "ENABLE_STREAM")}
+        "VLLM_CONCURRENCY", "VLLM_END_SILENCE_MS", "VLLM_OFFLINE_CHUNK_SEC",
+        "MODEL_SOURCE", "MAX_SEGMENT_DURATION", "SERVE_MODE", "ENABLE_STREAM")}
     try:
         ns = parse_args()
         assert ns.serve_mode == "vllm"
@@ -370,6 +370,7 @@ def test_parse_and_apply_vllm_args(monkeypatch):
         assert cfg.VLLM_MAX_UTTERANCE_SEC == 30
         assert cfg.VLLM_CONCURRENCY == 2
         assert cfg.VLLM_END_SILENCE_MS == 600
+        assert cfg.VLLM_OFFLINE_CHUNK_SEC == 90
     finally:
         for k, v in saved.items():
             setattr(cfg, k, v)
@@ -389,22 +390,6 @@ def test_parse_and_apply_realtime_priority_batch_size(monkeypatch):
         assert cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE == 2
     finally:
         cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE = saved
-
-
-def test_parse_and_apply_realtime_priority_vllm_chunk_sec(monkeypatch):
-    import app.config as cfg
-    from app.main import _apply_cli_config, parse_args
-
-    monkeypatch.setattr("sys.argv", [
-        "prog", "--no-config", "--realtime-priority-vllm-offline-chunk-sec", "12.5",
-    ])
-    saved = cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC
-    try:
-        ns = parse_args()
-        _apply_cli_config(ns)
-        assert cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC == 12.5
-    finally:
-        cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC = saved
 
 
 def test_parse_and_apply_vllm_align_device(monkeypatch):

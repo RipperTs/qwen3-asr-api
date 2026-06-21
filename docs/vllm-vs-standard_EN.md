@@ -47,7 +47,7 @@
   - In vLLM mode, realtime compat **auto-mounts with the compat switches and needs no `--enable-stream`** (the only startup difference vs standard).
 
 ### 2.5 Long-audio handling (new, vLLM-exclusive)
-- Offline audio longer than `vllm_offline_chunk_sec` (default 180s) is **transcribed chunk-by-chunk along silence boundaries** (chunks concatenate back to the original); when realtime priority is enabled it is also capped by `realtime_priority_vllm_offline_chunk_sec` (default 30s):
+- Offline audio longer than `vllm_offline_chunk_sec` (default 180s) is **transcribed chunk-by-chunk along silence boundaries** (chunks concatenate back to the original); when a realtime task arrives, offline yields at the next chunk boundary after the current chunk finishes:
   - **Smooth progress**: reported per chunk during transcription (no more 10%→90% jump).
   - **Cancellable between chunks**: long tasks can respond to cancellation mid-way.
   - **VRAM convergence**: only 1 chunk is aligned at a time, **eliminating long-audio alignment `CUDA out of memory`**.
@@ -87,6 +87,7 @@
 | `vllm_enable_align` / `--vllm-enable-align`·`--no-vllm-align` | on | Offline word-level timestamps (load the aligner model) |
 | `vllm_align_device` / `--vllm-align-device` | `cuda` | Aligner device; switch to `cpu` on long-audio OOM |
 | `vllm_infer_batch_size` / `--vllm-infer-batch-size` | `4` | Audio chunks per alignment/ASR batch (`-1` risks OOM) |
+| `vllm_offline_chunk_sec` / `--vllm-offline-chunk-sec` | `180` | Offline chunk-by-chunk transcription chunk length (sec); smaller values reduce realtime wait but lower offline throughput |
 | `vllm_segment_gap_ms` / `--vllm-segment-gap-ms` | `500` | Offline segmentation: inter-word gap split threshold |
 
 ### Config-file only (no CLI)
@@ -96,7 +97,6 @@
 | `vllm_unfixed_chunk_num` | `2` | Leading streaming chunks that don't take history as prefix (cold-start stability) |
 | `vllm_unfixed_token_num` | `5` | After leading chunks, roll back the last K tokens as prefix (reduce jitter) |
 | `vllm_energy_floor_dbfs` | `-45.0` | Streaming energy-endpoint gate (dBFS) |
-| `vllm_offline_chunk_sec` | `180` | Offline chunk-by-chunk transcription chunk length (sec); additionally capped by `realtime_priority_vllm_offline_chunk_sec` when realtime priority is enabled |
 
 > Switches such as speaker (`--enable-speaker*`) and compatibility APIs (`--enable-openai-api` / `--enable-dashscope-api`) **already exist in standard**; vLLM mode reuses them — they are not new.
 

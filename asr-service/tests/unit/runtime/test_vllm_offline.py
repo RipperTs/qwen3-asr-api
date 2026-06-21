@@ -367,6 +367,51 @@ def test_run_transcribe_progressive_yields_to_realtime_gate(monkeypatch, tmp_pat
     assert gate.calls == 3
 
 
+def test_run_transcribe_progressive_dedupes_adjacent_chunk_text(monkeypatch, tmp_path):
+    """相邻 vLLM 离线块输出相同边界文本时，只保留一次。"""
+    _prog_patch(monkeypatch, tmp_path, duration=600.0)
+    eng = _Engine(align=False, chunk_results=[
+        [_trans("第一句。重复内容需要保留一次。")],
+        [_trans("重复内容需要保留一次。第二句。")],
+    ])
+    task = {"task_id": "p-dedupe", "file_path": "/x.wav", "options": {"with_words": False}}
+
+    r = vo.run_vllm_offline(eng, task)
+
+    assert r["full_text"] == "第一句。重复内容需要保留一次。第二句。"
+
+
+def test_run_transcribe_progressive_preserves_chunk_spacing(monkeypatch, tmp_path):
+    """无重复时保留块边界原始空格，避免英文单词被拼到一起。"""
+    _prog_patch(monkeypatch, tmp_path, duration=600.0)
+    eng = _Engine(align=False, chunk_results=[[_trans("hello ")], [_trans("world.")]])
+    task = {"task_id": "p-spacing", "file_path": "/x.wav", "options": {"with_words": False}}
+
+    r = vo.run_vllm_offline(eng, task)
+
+    assert r["full_text"] == "hello world."
+
+
+def test_run_transcribe_progressive_dedupes_adjacent_chunk_words(monkeypatch, tmp_path):
+    """裁掉相邻块重复文本时，同步裁掉后一块对应词时间戳。"""
+    _prog_patch(monkeypatch, tmp_path, duration=600.0)
+    eng = _Engine(align=True, chunk_results=[
+        [_trans("你好世界。", [("你", 0.0, 0.1), ("好", 0.1, 0.2),
+                            ("世", 0.2, 0.3), ("界", 0.3, 0.4)])],
+        [_trans("你好世界。再见。", [("你", 0.0, 0.1), ("好", 0.1, 0.2),
+                                  ("世", 0.2, 0.3), ("界", 0.3, 0.4),
+                                  ("再", 0.5, 0.6), ("见", 0.6, 0.7)])],
+    ])
+    task = {"task_id": "p-dedupe-words", "file_path": "/x.wav",
+            "options": {"with_words": True}}
+
+    r = vo.run_vllm_offline(eng, task)
+
+    assert r["full_text"] == "你好世界。再见。"
+    assert [w["text"] for s in r["segments"] for w in s["words"]] == [
+        "你", "好", "世", "界", "再", "见"]
+
+
 def test_run_transcribe_progressive_stops_when_gate_cancelled(monkeypatch, tmp_path):
     _prog_patch(monkeypatch, tmp_path, duration=600.0)
     eng = _Engine(align=False, chunk_results=[[_trans("一。")], [_trans("二。")]])
@@ -386,11 +431,10 @@ def test_run_transcribe_progressive_stops_when_gate_cancelled(monkeypatch, tmp_p
     assert eng.transcribe_calls == []
 
 
-def test_realtime_gate_caps_vllm_offline_chunk_sec(monkeypatch, tmp_path):
-    """实时优先启用时，vLLM 离线按更小切块让出 GPU 边界。"""
+def test_realtime_gate_uses_vllm_offline_chunk_sec(monkeypatch, tmp_path):
+    """实时优先只在块间让路，不再额外改写 vLLM 离线切块大小。"""
     _prog_patch(monkeypatch, tmp_path, duration=120.0)
-    monkeypatch.setattr(cfg, "VLLM_OFFLINE_CHUNK_SEC", 180)
-    monkeypatch.setattr(cfg, "REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC", 30)
+    monkeypatch.setattr(cfg, "VLLM_OFFLINE_CHUNK_SEC", 60)
     eng = _Engine(align=False, chunk_results=[[_trans("一。")], [_trans("二。")]])
 
     class _Gate:
@@ -401,13 +445,12 @@ def test_realtime_gate_caps_vllm_offline_chunk_sec(monkeypatch, tmp_path):
     r = vo.run_vllm_offline(eng, task, priority_gate=_Gate())
 
     assert r["full_text"] == "一。二。"
-    assert eng.split_chunk_secs == [30]
+    assert eng.split_chunk_secs == [60]
 
 
-def test_realtime_gate_clamps_bad_vllm_offline_chunk_cap(monkeypatch, tmp_path):
+def test_vllm_offline_chunk_sec_clamps_bad_value(monkeypatch, tmp_path):
     _prog_patch(monkeypatch, tmp_path, duration=120.0)
-    monkeypatch.setattr(cfg, "VLLM_OFFLINE_CHUNK_SEC", 180)
-    monkeypatch.setattr(cfg, "REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC", 0)
+    monkeypatch.setattr(cfg, "VLLM_OFFLINE_CHUNK_SEC", 0)
     eng = _Engine(align=False, chunk_results=[[_trans("一。")], [_trans("二。")]])
 
     class _Gate:

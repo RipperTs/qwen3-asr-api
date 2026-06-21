@@ -26,7 +26,6 @@ LEGACY_DEFAULTS = {
     "max_stream_sessions": None,
     "stream_asr_concurrency": None,
     "realtime_priority_offline_batch_size": None,
-    "realtime_priority_vllm_offline_chunk_sec": None,
     "stream_save_audio": False,
     "stream_recordings_dir": "data/stream_recordings",
     "stream_recording_retention_hours": 72,
@@ -72,6 +71,7 @@ LEGACY_DEFAULTS = {
     "vllm_enable_align": None,
     "vllm_align_device": None,
     "vllm_infer_batch_size": None,
+    "vllm_offline_chunk_sec": None,
     "vllm_segment_gap_ms": None,
 }
 

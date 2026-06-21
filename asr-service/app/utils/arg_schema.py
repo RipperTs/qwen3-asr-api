@@ -150,18 +150,6 @@ ARG_SPECS = (
                 f"smaller reduces realtime wait (default: {cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE})",
     ),
     ArgSpec(
-        key="realtime_priority_vllm_offline_chunk_sec",
-        flags=("--realtime-priority-vllm-offline-chunk-sec",),
-        default=None,
-        type=float,
-        group="实时转写",
-        help="实时优先启用时 vLLM 离线切块上限，越小实时等待越短 "
-             f"(default: {cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC})",
-        help_en="Max vLLM offline chunk seconds while realtime priority is enabled; "
-                f"smaller reduces realtime wait "
-                f"(default: {cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC})",
-    ),
-    ArgSpec(
         key="stream_save_audio", flags=("--stream-save-audio",), default=False, type=bool,
         group="实时转写",
         help="保存实时录音原件为 WAV（默认关，录音下载/删除接口要求 api_key）",
@@ -285,6 +273,14 @@ ARG_SPECS = (
              f"小值省显存 (default: {cfg.VLLM_INFER_BATCH_SIZE})",
         help_en=f"Audio chunks per alignment/ASR batch (chunks ≤180s); -1=all at once "
                 f"(long audio aligner OOM), smaller saves VRAM (default: {cfg.VLLM_INFER_BATCH_SIZE})",
+    ),
+    ArgSpec(
+        key="vllm_offline_chunk_sec", flags=("--vllm-offline-chunk-sec",),
+        default=None, type=float, group="vLLM",
+        help=f"离线逐块转写切块时长（秒），调小可降低峰值显存但会降低吞吐 "
+             f"(default: {cfg.VLLM_OFFLINE_CHUNK_SEC})",
+        help_en=f"Offline chunk-by-chunk transcription chunk length (sec); smaller lowers "
+                f"peak VRAM but reduces throughput (default: {cfg.VLLM_OFFLINE_CHUNK_SEC})",
     ),
     ArgSpec(
         key="vllm_segment_gap_ms", flags=("--vllm-segment-gap-ms",),

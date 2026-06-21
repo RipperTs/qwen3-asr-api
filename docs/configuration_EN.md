@@ -56,7 +56,6 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 | `--max-stream-sessions` | Number | `16` | Max concurrent real-time sessions (excess connections closed with 1013) |
 | `--stream-asr-concurrency` | Number | `1` | Real-time ASR decoding concurrency cap (the model layer holds an inference lock; >1 brings no gain) |
 | `--realtime-priority-offline-batch-size` | number | `4` | Max standard offline ASR batch size while realtime priority is enabled; lower reduces realtime wait but lowers offline throughput |
-| `--realtime-priority-vllm-offline-chunk-sec` | sec | `30` | Max vLLM offline chunk length while realtime priority is enabled; lower reduces realtime wait but lowers offline throughput |
 
 ### Far-field Noise Filtering
 
@@ -150,6 +149,7 @@ Effective only in vllm mode; requires a CUDA GPU and an isolated environment/ima
 | `--vllm-enable-align` / `--no-vllm-align` | - | on | Offline `/v2/asr` word timestamps: load the aligner (off saves VRAM, no words) |
 | `--vllm-align-device` | `cuda` / `cpu` | `cuda` | Aligner device; its VRAM is **outside the `gpu_memory_utilization` budget** — switch to `cpu` (float32, slower, no GPU contention) if the aligner OOMs on long audio |
 | `--vllm-infer-batch-size` | number | `4` | Audio chunks per alignment/ASR batch (chunks ≤180s); `-1`=all at once (long-audio aligner OOM from stacked activations), lower to save VRAM, drop to `1` if long audio still OOMs |
+| `--vllm-offline-chunk-sec` | sec | `180` | Offline chunk-by-chunk transcription chunk length; realtime tasks wait at most for the current offline chunk, so smaller values reduce realtime wait but lower offline throughput |
 | `--vllm-segment-gap-ms` | ms | `500` | Offline segmentation: split when the inter-word gap exceeds this (no FSMN; word-gap proxy) |
 
 **Config-file only (no CLI; set in `config.yaml`):**
@@ -159,7 +159,6 @@ Effective only in vllm mode; requires a CUDA GPU and an isolated environment/ima
 | `vllm_unfixed_chunk_num` | `2` | Number of leading streaming chunks that don't take history as prefix (cold-start stability) |
 | `vllm_unfixed_token_num` | `5` | After the leading chunks, roll back the last K tokens as prefix (reduces jitter) |
 | `vllm_energy_floor_dbfs` | `-45.0` | Streaming energy-endpoint gate (dBFS); above this counts as speech / sentence start |
-| `vllm_offline_chunk_sec` | `180` | Offline chunk-by-chunk transcription chunk length (sec); when realtime priority is enabled it is additionally capped by `realtime_priority_vllm_offline_chunk_sec` (see [Long audio & progress](#vllm-native-streaming-mode) below) |
 
 ### Config-file Meta Parameters
 
@@ -288,7 +287,7 @@ api_key: "sk-your-key"
 - **Punctuation**: produced natively by Qwen3-ASR (already punctuated); cannot be turned off — `with_punc=false` is recorded in `warnings`.
 - **Word timestamps**: `--vllm-enable-align` (on by default) via ForcedAligner, same as standard; `--no-vllm-align` disables it to save VRAM.
   - ⚠️ **Long-audio alignment OOM**: the aligner is a standalone transformers model in the main process and its VRAM is **not counted in `gpu_memory_utilization`** (which only bounds the vLLM EngineCore subprocess). `transcribe` chunks internally at ≤180s, but by default (`max_inference_batch_size=-1`) it feeds **all** of a file's chunks into the aligner forward at once — long audio (e.g. 30 min ≈ 10 chunks) stacks activations and hits `CUDA out of memory` (short audio is a single chunk and is unaffected). Remedies (recommended order): ① **`--vllm-infer-batch-size`** (now defaults to `4`) aligns batch-by-batch, peak VRAM drops linearly with batch size, stays on GPU and is fastest — drop to `1` if long audio still OOMs; ② `--vllm-align-device cpu` to run the aligner on CPU (no GPU contention, slower but safe); ③ lower `--gpu-memory-utilization` to leave more GPU headroom; ④ `--no-vllm-align` to drop word timestamps.
-- **Long audio & progress**: offline audio longer than `vllm_offline_chunk_sec` (default 180s) is transcribed **chunk by chunk** at silence boundaries, so transcription progress (0.1→0.85) updates per chunk and cancellation is honored between chunks (short audio is transcribed in one pass). Chunks use qwen_asr's own splitting (concatenation reproduces the original), so quality matches whole-file transcription; lowering `vllm_offline_chunk_sec` gives finer progress and lower peak VRAM.
+- **Long audio & progress**: offline audio longer than `vllm_offline_chunk_sec` (default 180s) is transcribed **chunk by chunk** at silence boundaries, so transcription progress (0.1→0.85) updates per chunk and cancellation is honored between chunks (short audio is transcribed in one pass). Chunks use qwen_asr's own splitting (concatenation reproduces the original); lowering `vllm_offline_chunk_sec` gives finer progress, shorter realtime waits, and lower peak VRAM, but reduces offline throughput.
 - **Speaker diarization/ID**: with `--enable-speaker` (plus `--enable-speaker-db` for the voiceprint DB), offline `segments[].speaker` / `speaker_name` / `speakers` match standard; the engine is CAM++ (CPU, torch, not funasr), and **windowing uses an energy VAD instead of FSMN-VAD** (coarser boundaries). When disabled, `diarize`/`identify_speakers` are recorded in `warnings`. Requires extra deps `scipy`/`scikit-learn`/`modelscope` (or a pre-mounted CAM++ model dir); see [requirements-vllm.txt](../asr-service/requirements-vllm.txt). Realtime streaming still has no speaker labels.
 > For high-fidelity with FSMN segmentation / CT-Transformer punctuation / realtime speakers, use `standard` mode.
 
