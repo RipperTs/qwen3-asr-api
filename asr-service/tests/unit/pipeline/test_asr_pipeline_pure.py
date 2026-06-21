@@ -155,6 +155,214 @@ def test_transcribe_batched_yields_to_realtime_gate(monkeypatch):
     assert gate.calls == 3
 
 
+def test_build_segments_from_batch_preserves_offsets_words_and_split_marker(pipe):
+    class ASR:
+        align_enabled = True
+
+    pipe.asr = ASR()
+    chunks = [
+        {
+            "path": "c0.wav",
+            "offset_sec": 2.0,
+            "duration_sec": 1.5,
+            "split_after": True,
+        },
+        {
+            "path": "c1.wav",
+            "offset_sec": 4.0,
+            "duration_sec": 2.0,
+        },
+    ]
+    batch_results = [
+        types.SimpleNamespace(
+            text="你好",
+            time_stamps=types.SimpleNamespace(
+                items=[
+                    types.SimpleNamespace(text="你", start_time=0.1, end_time=0.2),
+                    types.SimpleNamespace(text="好", start_time=0.3, end_time=0.5),
+                ]
+            ),
+        ),
+        types.SimpleNamespace(text="世界", time_stamps=None),
+    ]
+
+    segments = pipe._build_segments_from_batch(chunks, batch_results)
+
+    assert segments == [
+        {
+            "start": 2.0,
+            "end": 3.5,
+            "text": "你好",
+            "words": [
+                {"text": "你", "start": 2.1, "end": 2.2},
+                {"text": "好", "start": 2.3, "end": 2.5},
+            ],
+            "split_after": True,
+        },
+        {
+            "start": 4.0,
+            "end": 6.0,
+            "text": "世界",
+        },
+    ]
+
+
+def test_transcribe_batched_can_use_global_scheduler(monkeypatch):
+    class ASR:
+        align_enabled = False
+
+        def batch_transcribe(self, audio_paths, language=None):
+            raise AssertionError("pipeline should delegate ASR calls to scheduler")
+
+    class Scheduler:
+        def __init__(self):
+            self.jobs = []
+
+        def submit_many(self, jobs, timeout=None):
+            self.jobs.append(list(jobs))
+            return [
+                types.SimpleNamespace(
+                    task_id=job.task_id,
+                    index=job.index,
+                    results=[types.SimpleNamespace(text=f"scheduled:{job.path}")],
+                    error=None,
+                )
+                for job in jobs
+            ]
+
+    scheduler = Scheduler()
+    monkeypatch.setattr("app.config.ASR_BATCH_SIZE", 2)
+    pipe = ASRPipeline(
+        asr_engine=ASR(),
+        vad_engine=types.SimpleNamespace(),
+        punc_engine=None,
+        asr_scheduler=scheduler,
+    )
+    chunks = [
+        {"path": "c0.wav", "offset_sec": 0.0, "duration_sec": 1.0},
+        {"path": "c1.wav", "offset_sec": 1.0, "duration_sec": 1.0},
+    ]
+
+    segments = pipe._transcribe_batched(
+        chunks,
+        total_chunks=len(chunks),
+        language="zh",
+        cancelled=None,
+        progress_callback=None,
+        task_id="task-x",
+    )
+
+    assert len(scheduler.jobs) == 1
+    assert [(job.task_id, job.index, job.path, job.language) for job in scheduler.jobs[0]] == [
+        ("task-x", 0, "c0.wav", "zh"),
+        ("task-x", 1, "c1.wav", "zh"),
+    ]
+    assert [segment["text"] for segment in segments] == [
+        "scheduled:c0.wav",
+        "scheduled:c1.wav",
+    ]
+
+
+def test_transcribe_batched_falls_back_when_scheduler_chunk_errors(monkeypatch):
+    class ASR:
+        align_enabled = False
+
+        def __init__(self):
+            self.fallback_paths = []
+
+        def batch_transcribe(self, audio_paths, language=None):
+            raise AssertionError("pipeline should delegate ASR calls to scheduler")
+
+        def transcribe(self, audio_path, language=None):
+            self.fallback_paths.append((audio_path, language))
+            return [types.SimpleNamespace(text=f"fallback:{audio_path}")]
+
+    class Scheduler:
+        def submit_many(self, jobs, timeout=None):
+            return [
+                types.SimpleNamespace(
+                    task_id=job.task_id,
+                    index=job.index,
+                    results=None,
+                    error="batch failed",
+                )
+                for job in jobs
+            ]
+
+    asr = ASR()
+    monkeypatch.setattr("app.config.ASR_BATCH_SIZE", 2)
+    pipe = ASRPipeline(
+        asr_engine=asr,
+        vad_engine=types.SimpleNamespace(),
+        punc_engine=None,
+        asr_scheduler=Scheduler(),
+    )
+    chunks = [
+        {"path": "c0.wav", "offset_sec": 0.0, "duration_sec": 1.0},
+        {"path": "c1.wav", "offset_sec": 1.0, "duration_sec": 1.0},
+    ]
+
+    segments = pipe._transcribe_batched(
+        chunks,
+        total_chunks=len(chunks),
+        language="zh",
+        cancelled=None,
+        progress_callback=None,
+        task_id="task-x",
+    )
+
+    assert asr.fallback_paths == [("c0.wav", "zh"), ("c1.wav", "zh")]
+    assert [segment["text"] for segment in segments] == [
+        "fallback:c0.wav",
+        "fallback:c1.wav",
+    ]
+
+
+def test_transcribe_batched_fallback_progress_keeps_original_chunk_index(monkeypatch):
+    class ASR:
+        align_enabled = False
+
+        def __init__(self):
+            self.calls = 0
+
+        def batch_transcribe(self, audio_paths, language=None):
+            self.calls += 1
+            if self.calls == 1:
+                return [types.SimpleNamespace(text=path) for path in audio_paths]
+            raise RuntimeError("batch failed")
+
+        def transcribe(self, audio_path, language=None):
+            return [types.SimpleNamespace(text=f"fallback:{audio_path}")]
+
+    progress = []
+    monkeypatch.setattr("app.config.ASR_BATCH_SIZE", 2)
+    pipe = ASRPipeline(
+        asr_engine=ASR(),
+        vad_engine=types.SimpleNamespace(),
+        punc_engine=None,
+    )
+    chunks = [
+        {"path": f"c{i}.wav", "offset_sec": float(i), "duration_sec": 1.0}
+        for i in range(4)
+    ]
+
+    segments = pipe._transcribe_batched(
+        chunks,
+        total_chunks=len(chunks),
+        language="zh",
+        cancelled=None,
+        progress_callback=progress.append,
+    )
+
+    assert [segment["text"] for segment in segments] == [
+        "c0.wav",
+        "c1.wav",
+        "fallback:c2.wav",
+        "fallback:c3.wav",
+    ]
+    assert progress == pytest.approx([0.5, 0.7, 0.9])
+
+
 def test_transcribe_batched_stops_when_gate_cancelled(monkeypatch):
     class ASR:
         align_enabled = False

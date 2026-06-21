@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "按照已确认的离线 ASR 动态合批设计完成所有阶段；模型识别准确度第一优先级。",
+  "goal": "在不牺牲识别准确度的前提下，让离线任务可以通过多 worker 和单模型全局动态合批提升吞吐。",
+  "successEvidence": [
+    "相关单元测试通过",
+    "scheduler 测试证明跨任务 chunk 可合批",
+    "review 记录每个阶段风险和结论",
+    "文档记录新配置和架构边界"
+  ],
+  "stopCondition": "全部阶段实现、review 和验证完成；若全量测试或架构检查失败则继续修复或报告阻塞。",
+  "nonGoals": [
+    "不做模型实例池",
+    "不绕过模型推理锁并发调用同一模型实例",
+    "不改变公开 API 响应结构",
+    "不降低识别准确率或改变音频切块语义"
+  ],
+  "scope": "standard 模式离线任务队列、ASR pipeline、全局 ASR scheduler、配置、文档和测试。",
+  "changeKinds": [
+    "architecture",
+    "runtime",
+    "configuration",
+    "tests",
+    "documentation"
+  ],
+  "riskHints": [
+    "GPU 模型 generate 非线程安全",
+    "多任务合批不能混用 language",
+    "默认路径必须保持串行兼容",
+    "batch 异常必须保留逐条识别兜底"
+  ]
+}

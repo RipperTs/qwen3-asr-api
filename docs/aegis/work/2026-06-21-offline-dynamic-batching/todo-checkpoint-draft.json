@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-06-21-offline-dynamic-batching",
+  "currentTodo": "完成候选：代码、测试、文档和 Aegis workspace 结构均已验证。",
+  "completedTodos": [
+    "设计规格已确认",
+    "实现计划已写入",
+    "阶段 1：拆分 ASRPipeline 并保持行为不变",
+    "阶段 1 review 与测试",
+    "阶段 2：新增并接入动态合批调度",
+    "阶段 2 review 与测试",
+    "阶段 3：配置、文档、观测和聚焦验证",
+    "最终审计"
+  ],
+  "activeSlice": "最终审计",
+  "evidenceRefs": [
+    "PYTHONPATH=asr-service .venv/bin/python -m pytest asr-service/tests/unit -q",
+    "git diff --check",
+    "PYTHONPATH=asr-service .venv/bin/python -m py_compile asr-service/app/runtime/offline_batch_scheduler.py asr-service/app/pipeline/asr_pipeline.py asr-service/app/runtime/task_manager.py asr-service/app/main.py asr-service/app/utils/arg_schema.py",
+    ".venv/bin/python /Users/wyf/.codex/aegis/scripts/aegis-workspace.py check --root /Users/wyf/PythonProject/qwen3-asr-service"
+  ],
+  "blockedOn": null,
+  "nextStep": "交付说明；真实 GPU 压测作为后续生产调参步骤。",
+  "updatedAt": "2026-06-21"
+}

@@ -188,6 +188,148 @@ def test_standard_mode_with_stream_mounts_ws(isolated_create_app, monkeypatch):
         assert created["backend"] == "vad-offline"
 
 
+def test_standard_mode_default_keeps_pipeline_scheduler_disabled(isolated_create_app, monkeypatch):
+    """默认离线 worker=1 时不启用动态合批，避免单用户默认路径增加等待窗口。"""
+    import app.config as cfg
+    import app.main as main
+
+    captured = {}
+    _mock_standard_engines(monkeypatch)
+
+    class CapturePipeline:
+        def __init__(self, *a, **k):
+            captured["asr_scheduler"] = k.get("asr_scheduler")
+
+        def run(self, *a, **k):
+            return {}
+
+    saved_worker_count = cfg.OFFLINE_WORKER_COUNT
+    try:
+        cfg.OFFLINE_WORKER_COUNT = 1
+        monkeypatch.setattr(main, "ASRPipeline", CapturePipeline)
+        main.create_app(_args(serve_mode="standard", device="auto"))
+        assert captured["asr_scheduler"] is None
+    finally:
+        cfg.OFFLINE_WORKER_COUNT = saved_worker_count
+
+
+def test_standard_mode_enables_scheduler_when_offline_workers_gt_one(isolated_create_app, monkeypatch):
+    import app.config as cfg
+    import app.main as main
+
+    captured = {}
+    _mock_standard_engines(monkeypatch)
+
+    class CapturePipeline:
+        def __init__(self, *a, **k):
+            captured["asr_scheduler"] = k.get("asr_scheduler")
+
+        def run(self, *a, **k):
+            return {}
+
+    saved = {k: getattr(cfg, k) for k in (
+        "OFFLINE_WORKER_COUNT", "OFFLINE_ASR_BATCH_SIZE", "OFFLINE_BATCH_WAIT_MS",
+    )}
+    try:
+        cfg.OFFLINE_WORKER_COUNT = 2
+        cfg.OFFLINE_ASR_BATCH_SIZE = 8
+        cfg.OFFLINE_BATCH_WAIT_MS = 25
+        monkeypatch.setattr(main, "ASRPipeline", CapturePipeline)
+        main.create_app(_args(serve_mode="standard", device="auto"))
+        assert captured["asr_scheduler"] is not None
+        assert captured["asr_scheduler"].batch_size == 8
+        assert captured["asr_scheduler"].batch_wait_ms == 25
+    finally:
+        for k, v in saved.items():
+            setattr(cfg, k, v)
+
+
+def test_standard_mode_disables_parallel_workers_without_asr_batch(isolated_create_app, monkeypatch):
+    """ASR 后端不支持 batch_transcribe 时退回单 worker，避免共享模型实例并发推理。"""
+    import app.config as cfg
+    import app.main as main
+
+    captured = {}
+    _mock_standard_engines(monkeypatch)
+
+    class NoBatchASR:
+        def __init__(self, *a, **k): self._model = MagicMock()
+        def load(self): pass
+        @property
+        def align_enabled(self): return True
+
+    class CaptureTaskManager:
+        def __init__(self, *a, **k):
+            captured["worker_count"] = k.get("worker_count")
+
+        def set_processor(self, fn): pass
+        def start(self): pass
+        def shutdown(self): pass
+
+    class CapturePipeline:
+        def __init__(self, *a, **k):
+            captured["asr_scheduler"] = k.get("asr_scheduler")
+
+        def run(self, *a, **k):
+            return {}
+
+    saved_worker_count = cfg.OFFLINE_WORKER_COUNT
+    try:
+        cfg.OFFLINE_WORKER_COUNT = 3
+        monkeypatch.setattr(main, "QwenASREngine", NoBatchASR)
+        monkeypatch.setattr(main, "TaskManager", CaptureTaskManager)
+        monkeypatch.setattr(main, "ASRPipeline", CapturePipeline)
+
+        main.create_app(_args(serve_mode="standard", device="auto"))
+
+        assert captured["worker_count"] == 1
+        assert captured["asr_scheduler"] is None
+    finally:
+        cfg.OFFLINE_WORKER_COUNT = saved_worker_count
+
+
+def test_standard_mode_shutdown_stops_scheduler_before_task_manager(isolated_create_app, monkeypatch):
+    """关闭时先释放 ASR scheduler，避免 TaskManager worker 卡在 submit_many 等待结果。"""
+    import app.config as cfg
+    import app.main as main
+
+    order = []
+    _mock_standard_engines(monkeypatch)
+
+    class CaptureTaskManager:
+        def __init__(self, *a, **k): pass
+        @property
+        def is_stopping(self): return False
+        def is_cancelled(self, task_id): return False
+        def set_processor(self, fn): pass
+        def start(self): pass
+        def shutdown(self):
+            order.append("task_manager")
+            return True
+
+    class CaptureScheduler:
+        def __init__(self, *a, **k): pass
+        def shutdown(self):
+            order.append("scheduler")
+
+    saved_worker_count = cfg.OFFLINE_WORKER_COUNT
+    try:
+        cfg.OFFLINE_WORKER_COUNT = 2
+        monkeypatch.setattr(main, "TaskManager", CaptureTaskManager)
+        monkeypatch.setattr(
+            "app.runtime.offline_batch_scheduler.ASRBatchScheduler",
+            CaptureScheduler,
+        )
+        app = main.create_app(_args(serve_mode="standard", device="auto"))
+
+        for shutdown_handler in app.router.on_shutdown:
+            shutdown_handler()
+
+        assert order[:2] == ["scheduler", "task_manager"]
+    finally:
+        cfg.OFFLINE_WORKER_COUNT = saved_worker_count
+
+
 def test_standard_mode_stream_save_audio_capability(isolated_create_app, monkeypatch):
     """开启实时录音保存时，capabilities 返回下载/删除路径模板。"""
     import app.main as main
@@ -392,6 +534,29 @@ def test_parse_and_apply_realtime_priority_batch_size(monkeypatch):
         cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE = saved
 
 
+def test_parse_and_apply_offline_scheduler_options(monkeypatch):
+    import app.config as cfg
+    from app.main import _apply_cli_config, parse_args
+
+    monkeypatch.setattr("sys.argv", [
+        "prog", "--no-config", "--offline-worker-count", "3",
+        "--offline-asr-batch-size", "16", "--offline-batch-wait-ms", "120",
+    ])
+    saved = {k: getattr(cfg, k) for k in (
+        "OFFLINE_WORKER_COUNT", "OFFLINE_ASR_BATCH_SIZE", "OFFLINE_BATCH_WAIT_MS",
+        "MODEL_SOURCE", "MAX_SEGMENT_DURATION", "SERVE_MODE", "ENABLE_STREAM",
+    )}
+    try:
+        ns = parse_args()
+        _apply_cli_config(ns)
+        assert cfg.OFFLINE_WORKER_COUNT == 3
+        assert cfg.OFFLINE_ASR_BATCH_SIZE == 16
+        assert cfg.OFFLINE_BATCH_WAIT_MS == 120
+    finally:
+        for k, v in saved.items():
+            setattr(cfg, k, v)
+
+
 def test_parse_and_apply_vllm_align_device(monkeypatch):
     """--vllm-align-device cpu 解析并写入 cfg（OOM 逃生：对齐器移出 GPU）。"""
     import app.config as cfg
@@ -489,6 +654,7 @@ def _mock_standard_engines(monkeypatch, *, align_enabled=False):
     class FakeASR:
         def __init__(self, *a, **k): self._model = MagicMock()
         def load(self): pass
+        def batch_transcribe(self, audio_paths, language=None): return []
         @property
         def align_enabled(self): return align_enabled
 

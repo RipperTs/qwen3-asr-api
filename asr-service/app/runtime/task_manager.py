@@ -11,16 +11,18 @@ logger = logging.getLogger(__name__)
 
 
 class TaskManager:
-    def __init__(self, max_queue_size=100, store=None):
+    def __init__(self, max_queue_size=100, store=None, worker_count: int = 1):
         self._queue = queue.Queue(maxsize=max_queue_size)
         self._tasks = {}  # task_id -> task_dict
         self._cancel_events: dict[str, threading.Event] = {}  # task_id -> cancel event
         self._done_events: dict[str, threading.Event] = {}    # task_id -> 终态通知（同步等待用）
         self._lock = threading.Lock()
-        self._worker_thread = None
+        self._worker_count = max(1, int(worker_count))
+        self._worker_threads = []
+        self._worker_thread = None  # 兼容旧测试/调试读取；指向第一个 worker
         self._cleanup_thread = None
         self._process_fn = None
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._executor = ThreadPoolExecutor(max_workers=self._worker_count)
         self._stop_event = threading.Event()
         # 可选持久化（app.runtime.task_store.TaskStore）：write-through，
         # store 内部自吞库异常，钩子调用一律放在 self._lock 之外（锁内不做 I/O）
@@ -36,11 +38,20 @@ class TaskManager:
 
     def start(self):
         """启动工作线程和清理线程"""
-        self._worker_thread = threading.Thread(target=self._worker, daemon=True)
-        self._worker_thread.start()
+        self._worker_threads = [
+            threading.Thread(
+                target=self._worker,
+                daemon=True,
+                name=f"offline-task-worker-{idx + 1}",
+            )
+            for idx in range(self._worker_count)
+        ]
+        self._worker_thread = self._worker_threads[0]
+        for worker in self._worker_threads:
+            worker.start()
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self._cleanup_thread.start()
-        logger.info("任务工作线程和清理线程已启动")
+        logger.info(f"任务工作线程({self._worker_count})和清理线程已启动")
 
     def submit(self, file_path: str, language: str | None = None,
                wav_name: str | None = None, identify_speakers: bool = False,
@@ -244,11 +255,14 @@ class TaskManager:
         logger.info("正在终止任务管理器...")
         self._stop_event.set()
         self._executor.shutdown(wait=False, cancel_futures=True)
-        if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=5)
+        worker_deadline = time.monotonic() + 5
+        for worker in self._worker_threads:
+            if worker.is_alive():
+                remaining = max(0, worker_deadline - time.monotonic())
+                worker.join(timeout=remaining)
         if self._cleanup_thread and self._cleanup_thread.is_alive():
             self._cleanup_thread.join(timeout=2)
-        worker_exited = not (self._worker_thread and self._worker_thread.is_alive())
+        worker_exited = not any(worker.is_alive() for worker in self._worker_threads)
         logger.info("任务管理器已终止")
         return worker_exited
 

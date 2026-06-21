@@ -40,8 +40,12 @@ def tm_factory():
 
     created = []
 
-    def _make(max_queue_size=100, start=False, processor=None, store=None):
-        tm = TaskManager(max_queue_size=max_queue_size, store=store)
+    def _make(max_queue_size=100, start=False, processor=None, store=None, worker_count=1):
+        tm = TaskManager(
+            max_queue_size=max_queue_size,
+            store=store,
+            worker_count=worker_count,
+        )
         if processor is not None:
             tm.set_processor(processor)
         if start:

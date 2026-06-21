@@ -57,6 +57,9 @@ def _parse_cli(argv=None):
 # 值为 None 时回填的 cfg 真实默认值（"生效配置"不应打"(未指定)"误导成未生效）
 _CFG_FALLBACK_ATTRS = {
     "host": "HOST", "port": "PORT", "max_queue_size": "MAX_QUEUE_SIZE",
+    "offline_worker_count": "OFFLINE_WORKER_COUNT",
+    "offline_asr_batch_size": "OFFLINE_ASR_BATCH_SIZE",
+    "offline_batch_wait_ms": "OFFLINE_BATCH_WAIT_MS",
     "max_stream_sessions": "MAX_STREAM_SESSIONS",
     "stream_asr_concurrency": "STREAM_ASR_CONCURRENCY",
 }
@@ -151,6 +154,12 @@ def _apply_cli_config(args):
         cfg.API_KEY = args.api_key
     if args.max_queue_size is not None:
         cfg.MAX_QUEUE_SIZE = args.max_queue_size
+    if getattr(args, "offline_worker_count", None) is not None:
+        cfg.OFFLINE_WORKER_COUNT = args.offline_worker_count
+    if getattr(args, "offline_asr_batch_size", None) is not None:
+        cfg.OFFLINE_ASR_BATCH_SIZE = args.offline_asr_batch_size
+    if getattr(args, "offline_batch_wait_ms", None) is not None:
+        cfg.OFFLINE_BATCH_WAIT_MS = args.offline_batch_wait_ms
     cfg.SERVE_MODE = getattr(args, "serve_mode", "standard")
     cfg.ENABLE_STREAM = getattr(args, "enable_stream", False)
     if getattr(args, "max_stream_sessions", None) is not None:
@@ -406,16 +415,6 @@ def _assemble_standard(app: FastAPI, args) -> None:
     stream_enabled = getattr(args, "enable_stream", False)
     realtime_priority_gate = RealtimePriorityGate(enabled=stream_enabled)
 
-    # 创建 Pipeline
-    pipeline = ASRPipeline(
-        asr_engine=asr_engine,
-        vad_engine=vad_engine,
-        punc_engine=punc_engine,
-        speaker_engine=speaker_engine,
-        speaker_service=linked_speaker_service,
-        priority_gate=realtime_priority_gate if stream_enabled else None,
-    )
-
     # 任务持久化（可选）：建库失败只告警不中断启动（附属能力不拖垮主链路）
     task_store = None
     if getattr(args, "enable_task_store", False):
@@ -437,8 +436,52 @@ def _assemble_standard(app: FastAPI, args) -> None:
 
     stream_recording_manager = _init_stream_recording_manager()
 
+    offline_worker_count = cfg.OFFLINE_WORKER_COUNT
+    asr_batch_supported = hasattr(asr_engine, "batch_transcribe")
+    if offline_worker_count > 1 and not asr_batch_supported:
+        logger.warning(
+            "当前 ASR 后端不支持 batch_transcribe，离线 worker 已从 %s 降为 1，"
+            "避免共享模型实例并发推理",
+            offline_worker_count,
+        )
+        offline_worker_count = 1
+
     # 创建任务管理器
-    task_manager = TaskManager(max_queue_size=cfg.MAX_QUEUE_SIZE, store=task_store)
+    task_manager = TaskManager(
+        max_queue_size=cfg.MAX_QUEUE_SIZE,
+        store=task_store,
+        worker_count=offline_worker_count,
+    )
+
+    # 全局离线 ASR 合批调度器：唯一跨任务 ASR batch owner。
+    # 默认 worker=1 时保持旧串行路径，避免单用户场景额外等待窗口。
+    asr_scheduler = None
+    if offline_worker_count > 1:
+        from app.runtime.offline_batch_scheduler import ASRBatchScheduler
+        asr_scheduler = ASRBatchScheduler(
+            asr_engine,
+            batch_size=cfg.OFFLINE_ASR_BATCH_SIZE,
+            batch_wait_ms=cfg.OFFLINE_BATCH_WAIT_MS,
+            is_cancelled=(
+                lambda task_id: task_manager.is_stopping
+                or task_manager.is_cancelled(task_id)
+            ),
+        )
+        logger.info(
+            f"离线动态合批已启用: workers={offline_worker_count}, "
+            f"batch_size={cfg.OFFLINE_ASR_BATCH_SIZE}, wait_ms={cfg.OFFLINE_BATCH_WAIT_MS}"
+        )
+
+    # 创建 Pipeline
+    pipeline = ASRPipeline(
+        asr_engine=asr_engine,
+        vad_engine=vad_engine,
+        punc_engine=punc_engine,
+        speaker_engine=speaker_engine,
+        speaker_service=linked_speaker_service,
+        priority_gate=realtime_priority_gate if stream_enabled else None,
+        asr_scheduler=asr_scheduler,
+    )
 
     def process_task(task: dict):
         def on_progress(p):
@@ -594,6 +637,8 @@ def _assemble_standard(app: FastAPI, args) -> None:
     @app.on_event("shutdown")
     def on_shutdown():
         logger.info("收到终止信号，正在安全关闭服务...")
+        if asr_scheduler is not None:
+            asr_scheduler.shutdown()
         worker_exited = task_manager.shutdown()
         if stream_backend is not None:
             stream_backend.shutdown()
