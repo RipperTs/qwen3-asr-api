@@ -123,3 +123,108 @@ def test_cleanup_tolerates_missing_paths(pipe, tmp_path):
     # 不存在的路径 / None 不应抛异常
     pipe._cleanup(None, None, str(tmp_path / "nope"))
     pipe._cleanup(str(tmp_path / "ghost.mp3"), str(tmp_path / "ghost.wav"), str(tmp_path / "ghostdir"))
+
+
+def test_transcribe_batched_yields_to_realtime_gate(monkeypatch):
+    class ASR:
+        align_enabled = False
+
+        def batch_transcribe(self, audio_paths, language=None):
+            return [types.SimpleNamespace(text=f"t{i}") for i, _ in enumerate(audio_paths)]
+
+    class Gate:
+        def __init__(self):
+            self.calls = 0
+
+        def wait_realtime_clear(self, cancelled=None):
+            self.calls += 1
+            return True
+
+    gate = Gate()
+    monkeypatch.setattr("app.config.ASR_BATCH_SIZE", 2)
+    pipe = ASRPipeline(asr_engine=ASR(), vad_engine=types.SimpleNamespace(),
+                       punc_engine=None, priority_gate=gate)
+    chunks = [
+        {"path": f"c{i}.wav", "offset_sec": float(i), "duration_sec": 1.0}
+        for i in range(5)
+    ]
+
+    segments = pipe._transcribe_batched(chunks, len(chunks), None, None, None)
+
+    assert len(segments) == 5
+    assert gate.calls == 3
+
+
+def test_transcribe_batched_stops_when_gate_cancelled(monkeypatch):
+    class ASR:
+        align_enabled = False
+
+        def batch_transcribe(self, audio_paths, language=None):
+            raise AssertionError("ASR should not run after cancellation")
+
+    class Gate:
+        def wait_realtime_clear(self, cancelled=None):
+            assert cancelled is not None
+            return False
+
+    monkeypatch.setattr("app.config.ASR_BATCH_SIZE", 2)
+    pipe = ASRPipeline(asr_engine=ASR(), vad_engine=types.SimpleNamespace(),
+                       punc_engine=None, priority_gate=Gate())
+    chunks = [{"path": "c0.wav", "offset_sec": 0.0, "duration_sec": 1.0}]
+
+    segments = pipe._transcribe_batched(chunks, len(chunks), None, lambda: False, None)
+
+    assert segments == []
+
+
+def test_transcribe_sequential_stops_when_gate_cancelled():
+    class ASR:
+        align_enabled = False
+
+        def transcribe(self, audio_path, language=None):
+            raise AssertionError("ASR should not run after cancellation")
+
+    class Gate:
+        def wait_realtime_clear(self, cancelled=None):
+            assert cancelled is not None
+            return False
+
+    pipe = ASRPipeline(asr_engine=ASR(), vad_engine=types.SimpleNamespace(),
+                       punc_engine=None, priority_gate=Gate())
+    chunks = [{"path": "c0.wav", "offset_sec": 0.0, "duration_sec": 1.0}]
+
+    segments = pipe._transcribe_sequential(chunks, len(chunks), None, lambda: False, None)
+
+    assert segments == []
+
+
+@pytest.mark.parametrize("bad_batch_size", [0, -2])
+def test_transcribe_batched_clamps_realtime_batch_size(monkeypatch, bad_batch_size):
+    class ASR:
+        align_enabled = False
+
+        def __init__(self):
+            self.batch_sizes = []
+
+        def batch_transcribe(self, audio_paths, language=None):
+            self.batch_sizes.append(len(audio_paths))
+            return [types.SimpleNamespace(text=f"t{i}") for i, _ in enumerate(audio_paths)]
+
+    class Gate:
+        def wait_realtime_clear(self, cancelled=None):
+            return True
+
+    asr = ASR()
+    monkeypatch.setattr("app.config.ASR_BATCH_SIZE", 2)
+    monkeypatch.setattr("app.config.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE", bad_batch_size)
+    pipe = ASRPipeline(asr_engine=asr, vad_engine=types.SimpleNamespace(),
+                       punc_engine=None, priority_gate=Gate())
+    chunks = [
+        {"path": f"c{i}.wav", "offset_sec": float(i), "duration_sec": 1.0}
+        for i in range(3)
+    ]
+
+    segments = pipe._transcribe_batched(chunks, len(chunks), None, None, None)
+
+    assert len(segments) == 3
+    assert asr.batch_sizes == [1, 1, 1]

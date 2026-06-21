@@ -25,6 +25,8 @@ LEGACY_DEFAULTS = {
     "enable_stream": False,
     "max_stream_sessions": None,
     "stream_asr_concurrency": None,
+    "realtime_priority_offline_batch_size": None,
+    "realtime_priority_vllm_offline_chunk_sec": None,
     "stream_save_audio": False,
     "stream_recordings_dir": "data/stream_recordings",
     "stream_recording_retention_hours": 72,

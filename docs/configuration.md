@@ -55,6 +55,8 @@
 | `--enable-stream` / `--no-stream` | - | 关闭（example 生成的配置中开启） | 挂载实时端点 `WS /v2/asr/stream`（standard 模式） |
 | `--max-stream-sessions` | 数字 | `16` | 实时最大并发会话数（超额连接以 1013 关闭） |
 | `--stream-asr-concurrency` | 数字 | `1` | 实时 ASR 解码并发上限（模型层有推理锁，>1 无收益） |
+| `--realtime-priority-offline-batch-size` | 数字 | `4` | 实时优先启用时 standard 离线 ASR 单批上限；调小可减少实时等待但会降低离线吞吐 |
+| `--realtime-priority-vllm-offline-chunk-sec` | 秒 | `30` | 实时优先启用时 vLLM 离线切块上限；调小可减少实时等待但会降低离线吞吐 |
 
 ### 智能远场过滤
 
@@ -157,7 +159,7 @@ volumes:
 | `vllm_unfixed_chunk_num` | `2` | 流式起始不拿历史当前缀的块数（冷启动稳定） |
 | `vllm_unfixed_token_num` | `5` | 起始块之后回滚末 K token 当前缀（降抖动） |
 | `vllm_energy_floor_dbfs` | `-45.0` | 流式能量端点门限（dBFS），高于此判为语音/句开始 |
-| `vllm_offline_chunk_sec` | `180` | 离线逐块转写切块时长（秒），调小=进度更细、峰值显存更省（详见下方[长音频与进度](#vllm-原生流式模式)） |
+| `vllm_offline_chunk_sec` | `180` | 离线逐块转写切块时长（秒）；实时优先启用时会再受 `realtime_priority_vllm_offline_chunk_sec` 限制（详见下方[长音频与进度](#vllm-原生流式模式)） |
 
 ### 配置文件元参数
 

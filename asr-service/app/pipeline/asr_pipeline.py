@@ -28,12 +28,14 @@ class ASRPipeline:
         punc_engine: PuncEngine | None = None,
         speaker_engine=None,
         speaker_service=None,
+        priority_gate=None,
     ):
         self.asr = asr_engine
         self.vad = vad_engine
         self.punc = punc_engine
         self.speaker = speaker_engine
         self.speaker_service = speaker_service    # 声纹库联动（None = 未启用）
+        self.priority_gate = priority_gate
 
     def run(
         self,
@@ -251,7 +253,10 @@ class ASRPipeline:
         progress_callback,
     ) -> list[dict]:
         """按 batch 分批调用 ASR 推理，每批之间更新进度和检查取消"""
-        batch_size = getattr(self.asr, "batch_size", None) or cfg.ASR_BATCH_SIZE
+        batch_size = max(1, int(getattr(self.asr, "batch_size", None) or cfg.ASR_BATCH_SIZE))
+        if self.priority_gate is not None:
+            realtime_batch_size = max(1, int(cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE))
+            batch_size = min(batch_size, realtime_batch_size)
         segments: list[dict] = []
         processed = 0
 
@@ -265,6 +270,12 @@ class ASRPipeline:
                     f"[Pipeline] 任务已取消，已完成 {processed}/{total_chunks} 个 chunk"
                 )
                 break
+            if self.priority_gate is not None:
+                if not self.priority_gate.wait_realtime_clear(cancelled=cancelled):
+                    logger.info(
+                        f"[Pipeline] 任务已取消，已完成 {processed}/{total_chunks} 个 chunk"
+                    )
+                    break
 
             batch_end = min(batch_start + batch_size, total_chunks)
             batch_chunks = chunks[batch_start:batch_end]
@@ -340,6 +351,10 @@ class ASRPipeline:
             if cancelled and cancelled():
                 logger.info(f"[Pipeline] 任务已取消，已完成 {i}/{total_chunks} 个 chunk")
                 break
+            if self.priority_gate is not None:
+                if not self.priority_gate.wait_realtime_clear(cancelled=cancelled):
+                    logger.info(f"[Pipeline] 任务已取消，已完成 {i}/{total_chunks} 个 chunk")
+                    break
 
             logger.info(
                 f"[Pipeline] ASR 处理中: chunk {i + 1}/{total_chunks} "

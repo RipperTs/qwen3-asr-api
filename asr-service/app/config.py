@@ -149,6 +149,8 @@ STREAM_SAMPLE_RATE = 16000      # 内部统一采样率
 STREAM_SAVE_AUDIO = False       # 是否保存流式录音原件（WAV），默认关
 STREAM_RECORDINGS_DIR = "data/stream_recordings"  # 流式录音保存目录；相对路径按服务根目录解析
 STREAM_RECORDING_RETENTION_HOURS = 72  # 流式录音保留时长（小时）；0 = 永不自动清理
+REALTIME_PRIORITY_OFFLINE_BATCH_SIZE = 4  # 实时启用时离线 ASR 单批上限，缩短 GPU 锁占用时间片
+REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC = 30  # 实时优先启用时 vLLM 离线切块上限，缩短单次 GPU 锁占用
 
 # ─── 远场过滤（段级能量/SNR 门控，仅实时，默认关）───
 

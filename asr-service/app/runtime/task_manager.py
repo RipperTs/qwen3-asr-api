@@ -211,6 +211,8 @@ class TaskManager:
                     self._store.finalize_task(task)
             except FuturesTimeoutError:
                 elapsed = time.time() - start_time
+                if cancel_event:
+                    cancel_event.set()
                 future.cancel()
                 with self._lock:
                     task["status"] = "failed"

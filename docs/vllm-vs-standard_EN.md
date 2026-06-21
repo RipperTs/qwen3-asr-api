@@ -47,7 +47,7 @@
   - In vLLM mode, realtime compat **auto-mounts with the compat switches and needs no `--enable-stream`** (the only startup difference vs standard).
 
 ### 2.5 Long-audio handling (new, vLLM-exclusive)
-- Offline audio longer than `vllm_offline_chunk_sec` (default 180s) is **transcribed chunk-by-chunk along silence boundaries** (chunks concatenate back to the original):
+- Offline audio longer than `vllm_offline_chunk_sec` (default 180s) is **transcribed chunk-by-chunk along silence boundaries** (chunks concatenate back to the original); when realtime priority is enabled it is also capped by `realtime_priority_vllm_offline_chunk_sec` (default 30s):
   - **Smooth progress**: reported per chunk during transcription (no more 10%→90% jump).
   - **Cancellable between chunks**: long tasks can respond to cancellation mid-way.
   - **VRAM convergence**: only 1 chunk is aligned at a time, **eliminating long-audio alignment `CUDA out of memory`**.
@@ -96,7 +96,7 @@
 | `vllm_unfixed_chunk_num` | `2` | Leading streaming chunks that don't take history as prefix (cold-start stability) |
 | `vllm_unfixed_token_num` | `5` | After leading chunks, roll back the last K tokens as prefix (reduce jitter) |
 | `vllm_energy_floor_dbfs` | `-45.0` | Streaming energy-endpoint gate (dBFS) |
-| `vllm_offline_chunk_sec` | `180` | Offline chunk-by-chunk transcription chunk length (sec) |
+| `vllm_offline_chunk_sec` | `180` | Offline chunk-by-chunk transcription chunk length (sec); additionally capped by `realtime_priority_vllm_offline_chunk_sec` when realtime priority is enabled |
 
 > Switches such as speaker (`--enable-speaker*`) and compatibility APIs (`--enable-openai-api` / `--enable-dashscope-api`) **already exist in standard**; vLLM mode reuses them — they are not new.
 

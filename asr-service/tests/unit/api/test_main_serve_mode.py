@@ -375,6 +375,38 @@ def test_parse_and_apply_vllm_args(monkeypatch):
             setattr(cfg, k, v)
 
 
+def test_parse_and_apply_realtime_priority_batch_size(monkeypatch):
+    import app.config as cfg
+    from app.main import _apply_cli_config, parse_args
+
+    monkeypatch.setattr("sys.argv", [
+        "prog", "--no-config", "--realtime-priority-offline-batch-size", "2",
+    ])
+    saved = cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE
+    try:
+        ns = parse_args()
+        _apply_cli_config(ns)
+        assert cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE == 2
+    finally:
+        cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE = saved
+
+
+def test_parse_and_apply_realtime_priority_vllm_chunk_sec(monkeypatch):
+    import app.config as cfg
+    from app.main import _apply_cli_config, parse_args
+
+    monkeypatch.setattr("sys.argv", [
+        "prog", "--no-config", "--realtime-priority-vllm-offline-chunk-sec", "12.5",
+    ])
+    saved = cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC
+    try:
+        ns = parse_args()
+        _apply_cli_config(ns)
+        assert cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC == 12.5
+    finally:
+        cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC = saved
+
+
 def test_parse_and_apply_vllm_align_device(monkeypatch):
     """--vllm-align-device cpu 解析并写入 cfg（OOM 逃生：对齐器移出 GPU）。"""
     import app.config as cfg

@@ -12,6 +12,7 @@ from app.utils.arg_schema import build_parser, ARG_SPECS, resolve_help_lang
 from app.utils.config_file import merge_runtime_config, run_config_update
 import app.config as cfg
 from app.runtime.device import detect_device, resolve_device, auto_select_model_size, should_disable_align
+from app.runtime.realtime_priority import RealtimePriorityGate
 from app.api.common_routes import init_common, build_common_router
 # standard 专属重型依赖（funasr/transformers/OpenVINO 系引擎、离线管线/路由）容错导入：
 # vLLM 专用环境（无 funasr）下置为 None，使 app.main 仍可被 uvicorn factory 加载启动
@@ -156,6 +157,10 @@ def _apply_cli_config(args):
         cfg.MAX_STREAM_SESSIONS = args.max_stream_sessions
     if getattr(args, "stream_asr_concurrency", None) is not None:
         cfg.STREAM_ASR_CONCURRENCY = args.stream_asr_concurrency
+    if getattr(args, "realtime_priority_offline_batch_size", None) is not None:
+        cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE = args.realtime_priority_offline_batch_size
+    if getattr(args, "realtime_priority_vllm_offline_chunk_sec", None) is not None:
+        cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC = args.realtime_priority_vllm_offline_chunk_sec
     cfg.STREAM_SAVE_AUDIO = getattr(args, "stream_save_audio", False)
     if getattr(args, "stream_recordings_dir", None) is not None:
         cfg.STREAM_RECORDINGS_DIR = args.stream_recordings_dir
@@ -398,6 +403,8 @@ def _assemble_standard(app: FastAPI, args) -> None:
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
     # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
     linked_speaker_service = speaker_service if speaker_db_enabled else None
+    stream_enabled = getattr(args, "enable_stream", False)
+    realtime_priority_gate = RealtimePriorityGate(enabled=stream_enabled)
 
     # 创建 Pipeline
     pipeline = ASRPipeline(
@@ -406,6 +413,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
         punc_engine=punc_engine,
         speaker_engine=speaker_engine,
         speaker_service=linked_speaker_service,
+        priority_gate=realtime_priority_gate if stream_enabled else None,
     )
 
     # 任务持久化（可选）：建库失败只告警不中断启动（附属能力不拖垮主链路）
@@ -450,7 +458,6 @@ def _assemble_standard(app: FastAPI, args) -> None:
     task_manager.start()
 
     # 构建服务信息（mode-aware，供 /health、/capabilities 使用）
-    stream_enabled = getattr(args, "enable_stream", False)
     capabilities = {
         "mode": "standard",
         "offline_api": True,
@@ -536,6 +543,7 @@ def _assemble_standard(app: FastAPI, args) -> None:
             noise_filter=cfg.STREAM_NOISE_FILTER,
             energy_floor_dbfs=cfg.STREAM_ENERGY_FLOOR_DBFS,
             snr_min_db=cfg.STREAM_SNR_MIN_DB,
+            priority_gate=realtime_priority_gate,
         )
         init_ws_stream(stream_backend)
         init_stream_recordings(stream_recording_manager)
@@ -694,6 +702,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     speaker_db_enabled = speaker_service is not None and not speaker_tag_mismatch
     # 转写联动仅在识别可用时注入（失配 = 库内模板与当前引擎不可比，联动同样禁用）
     linked_speaker_service = speaker_service if speaker_db_enabled else None
+    realtime_priority_gate = RealtimePriorityGate(enabled=True)
 
     stream_backend = VllmStreamBackend(
         engine,
@@ -702,6 +711,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         max_utterance_sec=cfg.VLLM_MAX_UTTERANCE_SEC,
         energy_floor_dbfs=cfg.VLLM_ENERGY_FLOOR_DBFS,
         end_silence_ms=cfg.VLLM_END_SILENCE_MS,
+        priority_gate=realtime_priority_gate,
     )
     stream_recording_manager = _init_stream_recording_manager()
     init_ws_stream(stream_backend)
@@ -745,6 +755,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
             speaker_engine=speaker_engine,
             speaker_service=linked_speaker_service,
             energy_vad=energy_vad,
+            priority_gate=realtime_priority_gate,
         )
 
     task_manager.set_processor(process_task)

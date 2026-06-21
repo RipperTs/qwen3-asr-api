@@ -192,6 +192,26 @@ def test_worker_timeout(tm_factory, monkeypatch):
     assert "超时" in tm.get_task(tid)["error"]
 
 
+def test_worker_timeout_sets_cancel_event(tm_factory, monkeypatch):
+    monkeypatch.setattr("app.runtime.task_manager.TASK_TIMEOUT", 0.1)
+    seen_cancel = []
+
+    def wait_for_cancel(task):
+        import time
+        for _ in range(30):
+            if tm.is_cancelled(task["task_id"]):
+                seen_cancel.append(True)
+                return {"cancelled": True}
+            time.sleep(0.02)
+        return {"cancelled": False}
+
+    tm = tm_factory(start=True, processor=wait_for_cancel)
+    tid = tm.submit("/tmp/a.wav")
+
+    assert wait_for(lambda: tm.get_task(tid)["status"] == "failed", timeout=2.0)
+    assert wait_for(lambda: seen_cancel == [True], timeout=2.0)
+
+
 def test_worker_skips_cancelled_pending(tm_factory):
     # pending 阶段被取消的任务，worker 跳过处理（不会变 completed）
     processed = []

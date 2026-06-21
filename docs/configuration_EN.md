@@ -55,6 +55,8 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 | `--enable-stream` / `--no-stream` | - | Disabled (enabled in configs generated from the example) | Mount the real-time endpoint `WS /v2/asr/stream` (standard mode) |
 | `--max-stream-sessions` | Number | `16` | Max concurrent real-time sessions (excess connections closed with 1013) |
 | `--stream-asr-concurrency` | Number | `1` | Real-time ASR decoding concurrency cap (the model layer holds an inference lock; >1 brings no gain) |
+| `--realtime-priority-offline-batch-size` | number | `4` | Max standard offline ASR batch size while realtime priority is enabled; lower reduces realtime wait but lowers offline throughput |
+| `--realtime-priority-vllm-offline-chunk-sec` | sec | `30` | Max vLLM offline chunk length while realtime priority is enabled; lower reduces realtime wait but lowers offline throughput |
 
 ### Far-field Noise Filtering
 
@@ -157,7 +159,7 @@ Effective only in vllm mode; requires a CUDA GPU and an isolated environment/ima
 | `vllm_unfixed_chunk_num` | `2` | Number of leading streaming chunks that don't take history as prefix (cold-start stability) |
 | `vllm_unfixed_token_num` | `5` | After the leading chunks, roll back the last K tokens as prefix (reduces jitter) |
 | `vllm_energy_floor_dbfs` | `-45.0` | Streaming energy-endpoint gate (dBFS); above this counts as speech / sentence start |
-| `vllm_offline_chunk_sec` | `180` | Offline chunk-by-chunk transcription chunk length (sec); lower = finer progress, lower peak VRAM (see [Long audio & progress](#vllm-native-streaming-mode) below) |
+| `vllm_offline_chunk_sec` | `180` | Offline chunk-by-chunk transcription chunk length (sec); when realtime priority is enabled it is additionally capped by `realtime_priority_vllm_offline_chunk_sec` (see [Long audio & progress](#vllm-native-streaming-mode) below) |
 
 ### Config-file Meta Parameters
 

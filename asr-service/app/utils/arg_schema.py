@@ -140,6 +140,28 @@ ARG_SPECS = (
         help_en=f"Max concurrent realtime ASR decodes (default: {cfg.STREAM_ASR_CONCURRENCY})",
     ),
     ArgSpec(
+        key="realtime_priority_offline_batch_size",
+        flags=("--realtime-priority-offline-batch-size",),
+        default=None,
+        type=int,
+        group="实时转写",
+        help=f"实时启用时离线 ASR 单批上限，越小实时等待越短 (default: {cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE})",
+        help_en="Max offline ASR batch size while realtime priority is enabled; "
+                f"smaller reduces realtime wait (default: {cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE})",
+    ),
+    ArgSpec(
+        key="realtime_priority_vllm_offline_chunk_sec",
+        flags=("--realtime-priority-vllm-offline-chunk-sec",),
+        default=None,
+        type=float,
+        group="实时转写",
+        help="实时优先启用时 vLLM 离线切块上限，越小实时等待越短 "
+             f"(default: {cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC})",
+        help_en="Max vLLM offline chunk seconds while realtime priority is enabled; "
+                f"smaller reduces realtime wait "
+                f"(default: {cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC})",
+    ),
+    ArgSpec(
         key="stream_save_audio", flags=("--stream-save-audio",), default=False, type=bool,
         group="实时转写",
         help="保存实时录音原件为 WAV（默认关，录音下载/删除接口要求 api_key）",

@@ -145,6 +145,83 @@ def test_feed_audio_partial_then_final():
     assert eng.new_states == 1                    # 仅起了一句
 
 
+def test_feed_audio_marks_realtime_priority_section():
+    class Gate:
+        def __init__(self):
+            self.entries = 0
+
+        def realtime_section(self):
+            gate = self
+
+            class _Ctx:
+                def __enter__(self):
+                    gate.entries += 1
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            return _Ctx()
+
+    gate = Gate()
+    eng = _MockEngine()
+    backend, sess = _make_session(eng, priority_gate=gate)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        return await _collect(sess.feed_audio(_voice()))
+
+    msgs = asyncio.run(run())
+    assert msgs and msgs[0]["type"] == "partial"
+    assert gate.entries == 1
+
+
+def test_feed_audio_marks_realtime_priority_while_waiting_for_sem():
+    class Gate:
+        def __init__(self):
+            self.entries = 0
+            self.exits = 0
+
+        def realtime_section(self):
+            gate = self
+
+            class _Ctx:
+                def __enter__(self):
+                    gate.entries += 1
+
+                def __exit__(self, exc_type, exc, tb):
+                    gate.exits += 1
+                    return False
+
+            return _Ctx()
+
+    gate = Gate()
+    eng = _MockEngine()
+    sem = asyncio.Semaphore(1)
+    backend = VllmStreamBackend(eng, priority_gate=gate)
+    sess = VllmStreamSession(
+        "sid-test-0001", eng, EnergyEndpointer(),
+        backend._executor, sem, priority_gate=gate)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        await sem.acquire()
+        task = asyncio.create_task(_collect(sess.feed_audio(_voice())))
+        try:
+            await asyncio.sleep(0.01)
+            assert gate.entries == 1
+            assert gate.exits == 0
+            sem.release()
+            msgs = await task
+            assert msgs and msgs[0]["type"] == "partial"
+            assert gate.exits == 1
+        finally:
+            if not task.done():
+                task.cancel()
+            backend.shutdown()
+
+    asyncio.run(run())
+
+
 def test_flush_emits_final_for_open_segment():
     eng = _MockEngine()
     _, sess = _make_session(eng)

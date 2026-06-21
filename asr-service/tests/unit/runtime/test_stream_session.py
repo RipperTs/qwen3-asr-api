@@ -75,6 +75,82 @@ async def test_complete_event_emits_final():
         ex.shutdown(wait=False)
 
 
+async def test_stream_asr_marks_realtime_priority_section():
+    class Gate:
+        def __init__(self):
+            self.entries = 0
+
+        def realtime_section(self):
+            gate = self
+
+            class _Ctx:
+                def __enter__(self):
+                    gate.entries += 1
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            return _Ctx()
+
+    gate = Gate()
+    svad = FakeSVAD(events_by_call={0: [{"type": "complete", "start": 0, "end": 1000}]})
+    asr = MagicMock()
+    asr.transcribe_array.return_value = [types.SimpleNamespace(text="hi")]
+    executor = ThreadPoolExecutor(max_workers=2)
+    s = StreamSession("sid", svad, asr, None, executor, asyncio.Semaphore(1),
+                      priority_gate=gate)
+    s.configure({"audio_fs": 16000})
+    try:
+        msgs = await _collect(s.feed_audio(_pcm_ms(1000)))
+        assert msgs[0]["type"] == "final"
+        assert gate.entries == 1
+    finally:
+        executor.shutdown(wait=False)
+
+
+async def test_stream_asr_marks_realtime_priority_while_waiting_for_sem():
+    class Gate:
+        def __init__(self):
+            self.entries = 0
+            self.exits = 0
+
+        def realtime_section(self):
+            gate = self
+
+            class _Ctx:
+                def __enter__(self):
+                    gate.entries += 1
+
+                def __exit__(self, exc_type, exc, tb):
+                    gate.exits += 1
+                    return False
+
+            return _Ctx()
+
+    gate = Gate()
+    svad = FakeSVAD(events_by_call={0: [{"type": "complete", "start": 0, "end": 1000}]})
+    asr = MagicMock()
+    asr.transcribe_array.return_value = [types.SimpleNamespace(text="hi")]
+    executor = ThreadPoolExecutor(max_workers=2)
+    sem = asyncio.Semaphore(1)
+    await sem.acquire()
+    s = StreamSession("sid", svad, asr, None, executor, sem, priority_gate=gate)
+    s.configure({"audio_fs": 16000})
+    task = asyncio.create_task(_collect(s.feed_audio(_pcm_ms(1000))))
+    try:
+        await asyncio.sleep(0.01)
+        assert gate.entries == 1
+        assert gate.exits == 0
+        sem.release()
+        msgs = await task
+        assert msgs[0]["type"] == "final"
+        assert gate.exits == 1
+    finally:
+        if not task.done():
+            task.cancel()
+        executor.shutdown(wait=False)
+
+
 async def test_start_then_end_emits_final():
     svad = FakeSVAD(events_by_call={
         0: [{"type": "start", "start": 0, "end": None}],

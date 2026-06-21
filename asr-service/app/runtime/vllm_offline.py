@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 def run_vllm_offline(engine, task, *, progress_callback=None, cancelled=None,
-                     speaker_engine=None, speaker_service=None, energy_vad=None) -> dict:
+                     speaker_engine=None, speaker_service=None, energy_vad=None,
+                     priority_gate=None) -> dict:
     """执行一次离线转写，返回与 standard ASRPipeline.run 同形的 result dict。
 
     speaker_engine/speaker_service/energy_vad 为 Phase 2 说话人能力（均可缺省=未启用）：
@@ -71,7 +72,8 @@ def run_vllm_offline(engine, task, *, progress_callback=None, cancelled=None,
         want_words = with_words and engine.align_enabled
         # 长音频按静音切块逐块转写：转写阶段 0.1→0.85 逐块报进度 + 块间查取消 + 压峰值显存
         transcribed = _transcribe_progressive(
-            engine, wav_path, duration, language, want_words, progress_callback, cancelled)
+            engine, wav_path, duration, language, want_words, progress_callback, cancelled,
+            priority_gate)
         if transcribed is None:                       # 转写途中取消
             return _result([], "", language, engine, warnings)
         full_text, words = transcribed
@@ -96,8 +98,25 @@ _PROGRESS_TRANSCRIBE_LO = 0.1
 _PROGRESS_TRANSCRIBE_HI = 0.85
 
 
+def _positive_float(value, fallback: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if number > 0 else fallback
+
+
+def _offline_chunk_sec(priority_gate=None) -> float:
+    chunk_sec = _positive_float(cfg.VLLM_OFFLINE_CHUNK_SEC, 1.0)
+    if priority_gate is None:
+        return chunk_sec
+    realtime_chunk_sec = _positive_float(
+        cfg.REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC, 1.0)
+    return min(chunk_sec, realtime_chunk_sec)
+
+
 def _transcribe_progressive(engine, wav_path, duration, language, want_words,
-                            progress_callback, cancelled):
+                            progress_callback, cancelled, priority_gate=None):
     """长音频按静音切块逐块转写，转写阶段 0.1→0.85 逐块报进度、块间查取消。
 
     返回 (full_text, words) ；途中取消返回 None。短音频（≤VLLM_OFFLINE_CHUNK_SEC）整段
@@ -105,7 +124,7 @@ def _transcribe_progressive(engine, wav_path, duration, language, want_words,
     →与整段转写质量一致，且每次只对齐一块、峰值显存随块走。词时间戳按块 offset 归到绝对时间。
     """
     import soundfile as sf
-    chunk_sec = float(cfg.VLLM_OFFLINE_CHUNK_SEC)
+    chunk_sec = _offline_chunk_sec(priority_gate)
     wav, sr = sf.read(wav_path, dtype="float32")
     if wav.ndim > 1:                                  # 兜底：多声道取均值（阶段0已单声道）
         wav = wav.mean(axis=1)
@@ -121,6 +140,9 @@ def _transcribe_progressive(engine, wav_path, duration, language, want_words,
     for i, (cwav, offset) in enumerate(chunks):
         if cancelled and cancelled():
             return None
+        if priority_gate is not None:
+            if not priority_gate.wait_realtime_clear(cancelled=cancelled):
+                return None
         results = engine.transcribe((cwav, sr), language=language, with_words=want_words)
         texts.append(extract_text(results))
         if want_words:

@@ -97,7 +97,7 @@ class StreamSession:
     def __init__(self, sid, svad: StreamingVADEngine, asr, punc, executor, asr_sem,
                  *, language=None, max_segment_sec=30, enable_words=False, speaker=None,
                  speaker_service=None, noise_filter=False, energy_floor_dbfs=-50.0,
-                 snr_min_db=6.0):
+                 snr_min_db=6.0, priority_gate=None):
         self.sid = sid
         self._svad = svad
         self._asr = asr
@@ -115,6 +115,7 @@ class StreamSession:
         self._energy_floor_dbfs = energy_floor_dbfs
         self._snr_min_db = snr_min_db
         self._noise_tracker = None               # configure() 时重建（会话域噪声底）
+        self._priority_gate = priority_gate
 
         # 会话级可覆盖参数（默认=服务端 cfg；configure() 经 _apply_session_override 覆盖）
         self._spk_threshold = cfg.SPEAKER_THRESHOLD
@@ -354,8 +355,14 @@ class StreamSession:
                     f"floor={'—' if floor is None else f'{floor:.1f}'} 门={reason}")
                 return
         t0 = time.monotonic()
-        async with self._asr_sem:                      # 串行化 GPU/ASR
-            res = await self._in_thread(self._asr.transcribe_array, seg, _TARGET_SR, self.language)
+        if self._priority_gate is None:
+            async with self._asr_sem:                  # 串行化 GPU/ASR
+                res = await self._in_thread(self._asr.transcribe_array, seg, _TARGET_SR, self.language)
+        else:
+            with self._priority_gate.realtime_section():
+                async with self._asr_sem:              # 串行化 GPU/ASR
+                    res = await self._in_thread(
+                        self._asr.transcribe_array, seg, _TARGET_SR, self.language)
         decode_ms = (time.monotonic() - t0) * 1000
         text = extract_text(res)
         if self._punc is not None and self._with_punc and text.strip():
@@ -434,7 +441,8 @@ class VadOfflineBackend:
 
     def __init__(self, asr, vad, punc=None, *, speaker=None, speaker_service=None,
                  max_sessions=4, asr_concurrency=1, max_segment_sec=30, vad_chunk_ms=200,
-                 noise_filter=False, energy_floor_dbfs=-50.0, snr_min_db=6.0):
+                 noise_filter=False, energy_floor_dbfs=-50.0, snr_min_db=6.0,
+                 priority_gate=None):
         self._svad = StreamingVADEngine(vad, chunk_ms=vad_chunk_ms)
         self._asr = asr
         self._punc = punc
@@ -445,6 +453,7 @@ class VadOfflineBackend:
         self._noise_filter = noise_filter
         self._energy_floor_dbfs = energy_floor_dbfs
         self._snr_min_db = snr_min_db
+        self._priority_gate = priority_gate
         self._enable_words = bool(getattr(asr, "align_enabled", False))
         # 在事件循环启动前创建：依赖 Python >=3.10 的 Semaphore 延迟绑定循环语义
         # （setup.sh 已强制 3.10/3.12；<3.10 会在此处 RuntimeError）
@@ -481,7 +490,7 @@ class VadOfflineBackend:
             max_segment_sec=self._max_segment_sec, enable_words=self._enable_words,
             speaker=self._speaker, speaker_service=self._speaker_service,
             noise_filter=self._noise_filter, energy_floor_dbfs=self._energy_floor_dbfs,
-            snr_min_db=self._snr_min_db,
+            snr_min_db=self._snr_min_db, priority_gate=self._priority_gate,
         )
 
     def release(self, session):

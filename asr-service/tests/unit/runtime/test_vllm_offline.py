@@ -26,12 +26,14 @@ class _Engine:
         self._chunk_results = chunk_results
         self._n_chunks = len(chunk_results) if chunk_results else 1
         self.transcribe_calls = []
+        self.split_chunk_secs = []
 
     @property
     def align_enabled(self):
         return self._align
 
     def split_chunks(self, wav, sr, chunk_sec):
+        self.split_chunk_secs.append(chunk_sec)
         n = self._n_chunks
         L = max(1, len(wav) // n)
         return [(wav[i * L:(i + 1) * L] if i < n - 1 else wav[i * L:], round(i * L / sr, 3))
@@ -341,6 +343,82 @@ def test_run_transcribe_progressive(monkeypatch, tmp_path):
     mid = [p for p in prog if 0.1 < p < 0.85]
     assert len(mid) >= 2 and mid == sorted(mid)                  # 转写阶段多点递增
     assert prog[-1] == 1.0
+
+
+def test_run_transcribe_progressive_yields_to_realtime_gate(monkeypatch, tmp_path):
+    """逐块转写每个 chunk 前让路给实时流。"""
+    _prog_patch(monkeypatch, tmp_path, duration=600.0)
+    eng = _Engine(align=False, chunk_results=[
+        [_trans("第一段。")], [_trans("第二段。")], [_trans("第三段。")]])
+
+    class _Gate:
+        def __init__(self):
+            self.calls = 0
+
+        def wait_realtime_clear(self, cancelled=None):
+            self.calls += 1
+            return True
+
+    gate = _Gate()
+    task = {"task_id": "p-gate", "file_path": "/x.wav", "options": {"with_words": False}}
+    r = vo.run_vllm_offline(eng, task, priority_gate=gate)
+
+    assert r["full_text"] == "第一段。第二段。第三段。"
+    assert gate.calls == 3
+
+
+def test_run_transcribe_progressive_stops_when_gate_cancelled(monkeypatch, tmp_path):
+    _prog_patch(monkeypatch, tmp_path, duration=600.0)
+    eng = _Engine(align=False, chunk_results=[[_trans("一。")], [_trans("二。")]])
+
+    class _Gate:
+        def wait_realtime_clear(self, cancelled=None):
+            assert cancelled is not None
+            return False
+
+    task = {"task_id": "p-gate-cancel", "file_path": "/x.wav",
+            "options": {"with_words": False}}
+    r = vo.run_vllm_offline(
+        eng, task, cancelled=lambda: False, priority_gate=_Gate())
+
+    assert r["full_text"] == ""
+    assert r["segments"] == []
+    assert eng.transcribe_calls == []
+
+
+def test_realtime_gate_caps_vllm_offline_chunk_sec(monkeypatch, tmp_path):
+    """实时优先启用时，vLLM 离线按更小切块让出 GPU 边界。"""
+    _prog_patch(monkeypatch, tmp_path, duration=120.0)
+    monkeypatch.setattr(cfg, "VLLM_OFFLINE_CHUNK_SEC", 180)
+    monkeypatch.setattr(cfg, "REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC", 30)
+    eng = _Engine(align=False, chunk_results=[[_trans("一。")], [_trans("二。")]])
+
+    class _Gate:
+        def wait_realtime_clear(self, cancelled=None):
+            return True
+
+    task = {"task_id": "p-vllm-cap", "file_path": "/x.wav", "options": {"with_words": False}}
+    r = vo.run_vllm_offline(eng, task, priority_gate=_Gate())
+
+    assert r["full_text"] == "一。二。"
+    assert eng.split_chunk_secs == [30]
+
+
+def test_realtime_gate_clamps_bad_vllm_offline_chunk_cap(monkeypatch, tmp_path):
+    _prog_patch(monkeypatch, tmp_path, duration=120.0)
+    monkeypatch.setattr(cfg, "VLLM_OFFLINE_CHUNK_SEC", 180)
+    monkeypatch.setattr(cfg, "REALTIME_PRIORITY_VLLM_OFFLINE_CHUNK_SEC", 0)
+    eng = _Engine(align=False, chunk_results=[[_trans("一。")], [_trans("二。")]])
+
+    class _Gate:
+        def wait_realtime_clear(self, cancelled=None):
+            return True
+
+    task = {"task_id": "p-vllm-bad-cap", "file_path": "/x.wav", "options": {"with_words": False}}
+    r = vo.run_vllm_offline(eng, task, priority_gate=_Gate())
+
+    assert r["full_text"] == "一。二。"
+    assert eng.split_chunk_secs == [1.0]
 
 
 def test_run_transcribe_progressive_words_offset(monkeypatch, tmp_path):

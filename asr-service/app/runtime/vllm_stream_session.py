@@ -80,12 +80,13 @@ class VllmStreamSession:
     """单个 WS 会话：能量端点断句 + vLLM 流式解码 → 句内 partial / 句尾 final。"""
 
     def __init__(self, sid, engine, endpointer: EnergyEndpointer, executor, infer_sem,
-                 *, language=None, max_utterance_sec=20):
+                 *, language=None, max_utterance_sec=20, priority_gate=None):
         self.sid = sid
         self._engine = engine
         self._endpointer = endpointer
         self._executor = executor
         self._sem = infer_sem                  # asyncio.Semaphore：限同时解码会话数
+        self._priority_gate = priority_gate
         self.language = language
         self._max_utt_samples = int(max_utterance_sec * _TARGET_SR)
         # 会话态
@@ -139,8 +140,13 @@ class VllmStreamSession:
         self._last_partial = ""
 
     async def _finish_segment(self, end_ms):
-        async with self._sem:
-            text, _ = await self._in_thread(self._engine.finish, self.state)
+        if self._priority_gate is None:
+            async with self._sem:
+                text, _ = await self._in_thread(self._engine.finish, self.state)
+        else:
+            with self._priority_gate.realtime_section():
+                async with self._sem:
+                    text, _ = await self._in_thread(self._engine.finish, self.state)
         msg = {"type": "final", "seg_id": self.seg_id, "text": text,
                "start": int(self._seg_start_ms or 0), "end": int(end_ms)}
         self.seg_id += 1
@@ -165,8 +171,13 @@ class VllmStreamSession:
 
         # 句内：喂本帧，文本变化则发 partial
         if self.state is not None:
-            async with self._sem:
-                text, _ = await self._in_thread(self._engine.feed, arr, self.state)
+            if self._priority_gate is None:
+                async with self._sem:
+                    text, _ = await self._in_thread(self._engine.feed, arr, self.state)
+            else:
+                with self._priority_gate.realtime_section():
+                    async with self._sem:
+                        text, _ = await self._in_thread(self._engine.feed, arr, self.state)
             self._utt_samples += arr.size
             if text and text != self._last_partial:
                 self._last_partial = text
@@ -200,12 +211,13 @@ class VllmStreamBackend:
     backend = "vllm-native"
 
     def __init__(self, engine, *, max_sessions=16, concurrency=1, max_utterance_sec=20,
-                 energy_floor_dbfs=-45.0, end_silence_ms=800):
+                 energy_floor_dbfs=-45.0, end_silence_ms=800, priority_gate=None):
         self._engine = engine
         self._max_sessions = max_sessions
         self._max_utterance_sec = max_utterance_sec
         self._energy_floor_dbfs = energy_floor_dbfs
         self._end_silence_ms = end_silence_ms
+        self._priority_gate = priority_gate
         # generate 由引擎 _infer_lock 串行；此信号量限同时在飞解码的会话数（默认 1）
         self._sem = asyncio.Semaphore(concurrency)
         self._executor = ThreadPoolExecutor(
@@ -232,7 +244,7 @@ class VllmStreamBackend:
             energy_floor_dbfs=self._energy_floor_dbfs, end_silence_ms=self._end_silence_ms)
         return VllmStreamSession(
             sid, self._engine, endpointer, self._executor, self._sem,
-            max_utterance_sec=self._max_utterance_sec)
+            max_utterance_sec=self._max_utterance_sec, priority_gate=self._priority_gate)
 
     def release(self, session):
         try:

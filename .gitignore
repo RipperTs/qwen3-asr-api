@@ -157,3 +157,5 @@ asr-service/logs
 htmlcov/
 .pytest_cache/
 .codegraph
+
+.DS_Store
