@@ -363,7 +363,6 @@ class ASRPipeline:
                 duration_sec=chunk_info["duration_sec"],
                 language=language,
                 split_after=bool(chunk_info.get("split_after")),
-                options={},
             )
             for offset, chunk_info in enumerate(batch_chunks)
         ]
@@ -375,22 +374,34 @@ class ASRPipeline:
             jobs,
             results,
         ):
+            if getattr(result, "cancelled", False):
+                logger.info(f"chunk {job.index} 调度识别已取消，跳过")
+                continue
             if result.error:
-                logger.error(f"chunk {job.index} 调度识别失败，回退到逐条处理: {result.error}")
-                fallback = self._transcribe_sequential(
-                    [chunk_info],
-                    total_chunks,
-                    language,
-                    cancelled,
-                    progress_callback,
-                    start_index=job.index,
-                )
-                segments.extend(fallback)
+                segment = self._retry_scheduler_chunk(chunk_info, job, result.error)
+                if segment is not None:
+                    segments.append(segment)
                 continue
             segment = self._build_segment_from_results(chunk_info, result.results or [])
             if segment is not None:
                 segments.append(segment)
         return segments
+
+    def _retry_scheduler_chunk(self, chunk_info: dict, job, error: str) -> dict | None:
+        """Retry one failed scheduler chunk without bypassing the scheduler owner."""
+        logger.warning(f"chunk {job.index} 调度识别失败，重新提交单条调度: {error}")
+        retry = self.asr_scheduler.submit(job)
+        if getattr(retry, "cancelled", False):
+            logger.info(f"chunk {job.index} 单条调度已取消，跳过")
+            return None
+        if retry.error:
+            logger.error(f"chunk {job.index} 单条调度失败: {retry.error}")
+            return {
+                "start": chunk_info["offset_sec"],
+                "end": chunk_info["offset_sec"] + chunk_info["duration_sec"],
+                "text": "[识别失败]",
+            }
+        return self._build_segment_from_results(chunk_info, retry.results or [])
 
     def _transcribe_sequential_chunk(
         self,

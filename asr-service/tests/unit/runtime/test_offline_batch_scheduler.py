@@ -22,9 +22,9 @@ def test_scheduler_batches_chunks_from_multiple_tasks():
     asr = ASR()
     scheduler = ASRBatchScheduler(asr, batch_size=3, batch_wait_ms=0)
     jobs = [
-        ChunkJob("task-a", 0, "a0.wav", 0.0, 1.0, "zh", False, {}),
-        ChunkJob("task-b", 0, "b0.wav", 1.0, 1.0, "zh", False, {}),
-        ChunkJob("task-a", 1, "a1.wav", 2.0, 1.0, "zh", True, {}),
+        ChunkJob("task-a", 0, "a0.wav", 0.0, 1.0, "zh", False),
+        ChunkJob("task-b", 0, "b0.wav", 1.0, 1.0, "zh", False),
+        ChunkJob("task-a", 1, "a1.wav", 2.0, 1.0, "zh", True),
     ]
 
     results = scheduler.transcribe_ready(jobs)
@@ -49,9 +49,9 @@ def test_scheduler_groups_by_language_to_preserve_asr_language_semantics():
     asr = ASR()
     scheduler = ASRBatchScheduler(asr, batch_size=8, batch_wait_ms=0)
     jobs = [
-        ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, "zh", False, {}),
-        ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, "en", False, {}),
-        ChunkJob("task-c", 0, "c.wav", 0.0, 1.0, "zh", False, {}),
+        ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, "zh", False),
+        ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, "en", False),
+        ChunkJob("task-c", 0, "c.wav", 0.0, 1.0, "zh", False),
     ]
 
     results = scheduler.transcribe_ready(jobs)
@@ -84,13 +84,16 @@ def test_scheduler_skips_cancelled_jobs_before_asr_call():
         is_cancelled=lambda task_id: task_id in cancelled,
     )
     jobs = [
-        ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, None, False, {}),
-        ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, None, False, {}),
+        ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, None, False),
+        ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, None, False),
     ]
 
     results = scheduler.transcribe_ready(jobs)
 
-    assert [r.task_id for r in results] == ["task-a"]
+    assert [(r.task_id, r.cancelled, r.error) for r in results] == [
+        ("task-b", True, "ASR 任务已取消"),
+        ("task-a", False, None),
+    ]
     assert scheduler.asr.calls == [["a.wav"]]
 
 
@@ -101,8 +104,8 @@ def test_scheduler_returns_chunk_errors_when_batch_result_count_mismatches():
 
     scheduler = ASRBatchScheduler(ASR(), batch_size=4, batch_wait_ms=0)
     jobs = [
-        ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, None, False, {}),
-        ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, None, False, {}),
+        ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, None, False),
+        ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, None, False),
     ]
 
     results = scheduler.transcribe_ready(jobs)
@@ -120,8 +123,8 @@ def test_scheduler_returns_chunk_errors_when_asr_batch_raises():
 
     scheduler = ASRBatchScheduler(ASR(), batch_size=4, batch_wait_ms=0)
     jobs = [
-        ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, None, False, {}),
-        ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, None, False, {}),
+        ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, None, False),
+        ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, None, False),
     ]
 
     results = scheduler.transcribe_ready(jobs)
@@ -142,8 +145,8 @@ def test_scheduler_submit_waits_briefly_and_batches_concurrent_callers():
             return [types.SimpleNamespace(text=path) for path in audio_paths]
 
     scheduler = ASRBatchScheduler(ASR(), batch_size=2, batch_wait_ms=100)
-    job_a = ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, None, False, {})
-    job_b = ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, None, False, {})
+    job_a = ChunkJob("task-a", 0, "a.wav", 0.0, 1.0, None, False)
+    job_b = ChunkJob("task-b", 0, "b.wav", 0.0, 1.0, None, False)
 
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -171,8 +174,8 @@ def test_scheduler_submit_many_preserves_single_task_batching():
 
     scheduler = ASRBatchScheduler(ASR(), batch_size=8, batch_wait_ms=100)
     jobs = [
-        ChunkJob("task-a", 0, "a0.wav", 0.0, 1.0, "zh", False, {}),
-        ChunkJob("task-a", 1, "a1.wav", 1.0, 1.0, "zh", False, {}),
+        ChunkJob("task-a", 0, "a0.wav", 0.0, 1.0, "zh", False),
+        ChunkJob("task-a", 1, "a1.wav", 1.0, 1.0, "zh", False),
     ]
 
     try:

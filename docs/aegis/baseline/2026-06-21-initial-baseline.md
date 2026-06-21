@@ -18,6 +18,7 @@
 - standard 离线任务由 `TaskManager` 单工作线程串行处理。
 - `TaskManager` 内部执行池固定为 `ThreadPoolExecutor(max_workers=1)`。
 - standard GPU `QwenASREngine` 对 `transcribe` / `batch_transcribe` 使用 `_infer_lock` 串行化，原因是 `Qwen3ASRModel.generate` 非线程安全。
+- VAD、标点、说话人 embedding 等共享推理入口也由各自 engine 的 `_infer_lock` 串行保护；多离线 worker 可并发推进 pipeline，但不能绕过这些 engine 边界直接并发调用共享模型实例。
 - 当前 `ASRPipeline` 的 batch 只来自单个任务内部切出的 chunk，不合并多个用户任务的 chunk。
 - 实时与离线共用 ASR 引擎，实时优先通过 `RealtimePriorityGate` 和离线 batch 缩小实现让路。
 - vLLM 模式同样声明进程内同步推理，提升 `concurrency` 不带来吞吐收益。

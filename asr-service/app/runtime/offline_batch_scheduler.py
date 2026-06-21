@@ -19,9 +19,6 @@ class ChunkJob:
     duration_sec: float
     language: str | None
     split_after: bool
-    options: dict
-    priority: int = 0
-    created_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -30,6 +27,7 @@ class ChunkResult:
     index: int
     results: list | None
     error: str | None = None
+    cancelled: bool = False
 
 
 @dataclass
@@ -83,7 +81,7 @@ class ASRBatchScheduler:
         pending = _PendingJob(job=job, group_id=uuid.uuid4().hex)
         with self._wake:
             if self._stop_event.is_set():
-                return ChunkResult(job.task_id, job.index, None, "ASR 调度器已停止")
+                return ChunkResult(job.task_id, job.index, None, "ASR 调度器已停止", True)
             self._pending.append(pending)
             self._wake.notify()
 
@@ -108,7 +106,7 @@ class ASRBatchScheduler:
         with self._wake:
             if self._stop_event.is_set():
                 return [
-                    ChunkResult(job.task_id, job.index, None, "ASR 调度器已停止")
+                    ChunkResult(job.task_id, job.index, None, "ASR 调度器已停止", True)
                     for job in jobs
                 ]
             self._pending.extend(pending_jobs)
@@ -151,6 +149,7 @@ class ASRBatchScheduler:
                     pending.job.index,
                     None,
                     "ASR 调度器已停止",
+                    True,
                 )
                 pending.done.set()
             self._pending.clear()
@@ -172,10 +171,14 @@ class ASRBatchScheduler:
 
         准确度优先：不同 language 的 chunk 不混批，避免改变上游 ASR 的语言语义。
         """
-        active_jobs = [job for job in jobs if not self.is_cancelled(job.task_id)]
         results: list[ChunkResult] = []
         groups: dict[str | None, list[ChunkJob]] = {}
-        for job in active_jobs:
+        for job in jobs:
+            if self.is_cancelled(job.task_id):
+                results.append(
+                    ChunkResult(job.task_id, job.index, None, "ASR 任务已取消", True)
+                )
+                continue
             groups.setdefault(job.language, []).append(job)
 
         for group in groups.values():
@@ -238,6 +241,7 @@ class ASRBatchScheduler:
                     pending.job.index,
                     None,
                     "ASR 任务已取消",
+                    True,
                 )
                 pending.done.set()
 
@@ -245,7 +249,7 @@ class ASRBatchScheduler:
         deadline = None
         with self._wake:
             while not self._stop_event.is_set() and not self._pending:
-                self._wake.wait(timeout=0.1)
+                self._wake.wait()
             if self._stop_event.is_set():
                 return []
 
@@ -265,6 +269,7 @@ class ASRBatchScheduler:
 
     def _pop_next_batch_locked(self) -> list[_PendingJob]:
         first = self._pending[0]
+        # Keep chunks submitted by the same caller adjacent before filling spare slots.
         group = [item for item in self._pending if item.group_id == first.group_id]
         batch = group[:self.batch_size]
         selected = {id(item) for item in batch}

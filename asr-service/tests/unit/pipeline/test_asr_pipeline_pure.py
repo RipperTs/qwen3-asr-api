@@ -2,6 +2,7 @@
 
 行为依源码确认（asr_pipeline.py:276/363/383/403）。
 """
+import logging
 import os
 import types
 
@@ -263,21 +264,20 @@ def test_transcribe_batched_can_use_global_scheduler(monkeypatch):
     ]
 
 
-def test_transcribe_batched_falls_back_when_scheduler_chunk_errors(monkeypatch):
+def test_transcribe_batched_retries_scheduler_errors_via_scheduler(monkeypatch):
     class ASR:
         align_enabled = False
-
-        def __init__(self):
-            self.fallback_paths = []
 
         def batch_transcribe(self, audio_paths, language=None):
             raise AssertionError("pipeline should delegate ASR calls to scheduler")
 
         def transcribe(self, audio_path, language=None):
-            self.fallback_paths.append((audio_path, language))
-            return [types.SimpleNamespace(text=f"fallback:{audio_path}")]
+            raise AssertionError("scheduler path should not bypass scheduler fallback")
 
     class Scheduler:
+        def __init__(self):
+            self.retry_jobs = []
+
         def submit_many(self, jobs, timeout=None):
             return [
                 types.SimpleNamespace(
@@ -289,13 +289,22 @@ def test_transcribe_batched_falls_back_when_scheduler_chunk_errors(monkeypatch):
                 for job in jobs
             ]
 
-    asr = ASR()
+        def submit(self, job, timeout=None):
+            self.retry_jobs.append(job)
+            return types.SimpleNamespace(
+                task_id=job.task_id,
+                index=job.index,
+                results=[types.SimpleNamespace(text=f"retry:{job.path}")],
+                error=None,
+            )
+
+    scheduler = Scheduler()
     monkeypatch.setattr("app.config.ASR_BATCH_SIZE", 2)
     pipe = ASRPipeline(
-        asr_engine=asr,
+        asr_engine=ASR(),
         vad_engine=types.SimpleNamespace(),
         punc_engine=None,
-        asr_scheduler=Scheduler(),
+        asr_scheduler=scheduler,
     )
     chunks = [
         {"path": "c0.wav", "offset_sec": 0.0, "duration_sec": 1.0},
@@ -311,11 +320,69 @@ def test_transcribe_batched_falls_back_when_scheduler_chunk_errors(monkeypatch):
         task_id="task-x",
     )
 
-    assert asr.fallback_paths == [("c0.wav", "zh"), ("c1.wav", "zh")]
-    assert [segment["text"] for segment in segments] == [
-        "fallback:c0.wav",
-        "fallback:c1.wav",
+    assert [(job.index, job.path) for job in scheduler.retry_jobs] == [
+        (0, "c0.wav"),
+        (1, "c1.wav"),
     ]
+    assert [segment["text"] for segment in segments] == [
+        "retry:c0.wav",
+        "retry:c1.wav",
+    ]
+
+
+def test_transcribe_batched_skips_scheduler_cancelled_without_fallback(monkeypatch, caplog):
+    class ASR:
+        align_enabled = False
+
+        def batch_transcribe(self, audio_paths, language=None):
+            raise AssertionError("pipeline should delegate ASR calls to scheduler")
+
+        def transcribe(self, audio_path, language=None):
+            raise AssertionError("cancelled scheduler results must not fallback")
+
+    class Scheduler:
+        def __init__(self):
+            self.retry_jobs = []
+
+        def submit_many(self, jobs, timeout=None):
+            return [
+                types.SimpleNamespace(
+                    task_id=job.task_id,
+                    index=job.index,
+                    results=None,
+                    error="ASR 任务已取消",
+                    cancelled=True,
+                )
+                for job in jobs
+            ]
+
+        def submit(self, job, timeout=None):
+            self.retry_jobs.append(job)
+            raise AssertionError("cancelled scheduler results must not be retried")
+
+    scheduler = Scheduler()
+    monkeypatch.setattr("app.config.ASR_BATCH_SIZE", 2)
+    pipe = ASRPipeline(
+        asr_engine=ASR(),
+        vad_engine=types.SimpleNamespace(),
+        punc_engine=None,
+        asr_scheduler=scheduler,
+    )
+    chunks = [{"path": "c0.wav", "offset_sec": 0.0, "duration_sec": 1.0}]
+
+    with caplog.at_level(logging.ERROR, logger="app.pipeline.asr_pipeline"):
+        segments = pipe._transcribe_batched(
+            chunks,
+            total_chunks=len(chunks),
+            language="zh",
+            cancelled=None,
+            progress_callback=None,
+            task_id="task-x",
+        )
+
+    assert segments == []
+    assert scheduler.retry_jobs == []
+    assert not caplog.records
 
 
 def test_transcribe_batched_fallback_progress_keeps_original_chunk_index(monkeypatch):
