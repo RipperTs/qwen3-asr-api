@@ -100,7 +100,7 @@ Client                                  Server
 **`start` (first message, JSON text frame)**:
 
 ```json
-{"type": "start", "audio_fs": 16000, "language": null, "wav_name": "stream"}
+{"type": "start", "audio_fs": 16000, "language": null, "wav_name": "stream", "recording_id": null}
 ```
 
 | Field | Default | Description |
@@ -108,6 +108,7 @@ Client                                  Server
 | audio_fs | 16000 | Sample rate, 8000–96000 allowed; non-16k input is resampled server-side |
 | language | null | Language code, null for auto-detection |
 | wav_name | "stream" | Session name (for display) |
+| recording_id | null | Optional. To resume recording after a disconnect, pass the `recording_id` previously returned by the server; if the original WAV still exists, new PCM is appended; if it was deleted or expired, the server creates a new WAV with this ID |
 | identify_speakers | false | Run voiceprint identification on speaker labels (requires `session.created.capabilities.speaker_identification=true`) |
 | noise_filter | server default | Override far-field segment gating for this session (defaults to the server config; requires `capabilities.noise_filter_tunable=true`) |
 | energy_floor_dbfs | server default | Override the absolute energy gate (dBFS) for this session, range `[-90, 0]`; out-of-range returns `invalid_config` |
@@ -137,7 +138,7 @@ All server-to-client messages use a uniform envelope and carry a `type`:
 | type | Fields | Description |
 |------|--------|-------------|
 | `session.created` | `protocol`("qwen3-asr-stream") / `protocol_version`("1.0") / `mode` / `backend` / `sample_rate` / `capabilities` / `limits` | Sent on connect; `capabilities` contains `partial_results` / `word_timestamps` / `languages_auto` / `speaker_labels` / `speaker_identification`, plus tunability flags `noise_filter_tunable` / `speaker_tunable` / `endpoint_tunable` / `output_toggles` (whether the corresponding overrides can be tuned in this session); `limits` contains `max_frame_bytes` / `max_backlog_bytes` — clients pushing faster than real time should pace themselves accordingly (use `final.end` as processing-progress feedback and keep the unprocessed backlog below the limit) |
-| `recording.created` | `recording_id` / `wav_name` | Sent only when `stream_save_audio` is enabled, after `start` is accepted; use `recording_id` to download or delete the saved WAV recording |
+| `recording.created` | `recording_id` / `wav_name` / `resumed` | Sent only when `stream_save_audio` is enabled, after `start` is accepted; use `recording_id` to download or delete the saved WAV recording; `resumed=true` means this session is appending to an existing WAV, and `resumed=false` means a new recording was created |
 | `partial` | `seg_id` / `text` | Intermediate result (only for backends with `partial_results=true`; vad-offline does not produce them) |
 | `final` | `seg_id` / `text` / `start` / `end` / `words` / `speaker` / `speaker_name` | Finalized sentence-level result; `start`/`end` in milliseconds; `words` only when `word_timestamps=true`; `speaker` (anonymous label A/B/C…) only when `speaker_labels=true` and this segment is decidable; `speaker_name` only when `identify_speakers=true` and a voiceprint matches (speaker label / real-name semantics in [Speaker Management](speakers_EN.md#speaker-diarization--voiceprint-identification)) |
 | `error` | `code` / `message` / `seg_id` / `fatal` | The session terminates when `fatal=true` |
@@ -179,10 +180,24 @@ In Docker deployments the default maps to `/app/data/stream_recordings`; the com
 Native `WS /v2/asr/stream` emits:
 
 ```json
-{"type": "recording.created", "recording_id": "9f86...", "wav_name": "stream.wav"}
+{"type": "recording.created", "recording_id": "9f86...", "wav_name": "stream.wav", "resumed": false}
 ```
 
 Compatible real-time APIs carry the same info in their start confirmation messages: OpenAI Realtime uses `session.updated.session.recording`, and DashScope Realtime uses `task-started.payload.recording`.
+
+To append to the same saved recording after a disconnect, include the previous `recording_id` in the next native `WS /v2/asr/stream` `start` message:
+
+```json
+{"type": "start", "audio_fs": 16000, "wav_name": "stream", "recording_id": "9f86..."}
+```
+
+On success the server returns:
+
+```json
+{"type": "recording.created", "recording_id": "9f86...", "wav_name": "stream.wav", "resumed": true}
+```
+
+This resumes only the saved WAV file, not the ASR session state: after reconnect, `seg_id`, VAD buffers, partial results, and speaker clustering all restart as a new session. If the target recording still exists, resume requires matching sample rate / channels / sample width. If the target recording was deleted or expired, the server creates a new WAV with the supplied `recording_id` and returns `resumed=false`. Clients must check `resumed` to know whether the old recording was actually continued. Only one connection may write a given `recording_id` at a time. Failures return a fatal `error`; common `code` values are `invalid_recording_id`, `recording_conflict`, and `recording_mismatch`.
 
 Retention is controlled by `stream_recording_retention_hours` / `--stream-recording-retention-hours`, default `72` hours. Expired files are cleaned at service startup; `0` means never auto-clean.
 
@@ -232,6 +247,9 @@ Values of `code` in the uniform `error` envelope:
 | code | fatal | Description |
 |------|-------|-------------|
 | `invalid_config` | yes | `start` message validation failed (e.g. `audio_fs` out of range) |
+| `invalid_recording_id` | yes | `recording_id` format is invalid |
+| `recording_conflict` | yes | The same `recording_id` is already being written by another connection |
+| `recording_mismatch` | yes | Target WAV parameters or structure are not resumable (for example sample rate / channels / sample width mismatch) |
 | `frame_too_large` | no | Frame exceeds 2MB; the frame is dropped |
 | `backlog_overflow` | yes | Processing backlog exceeds 8MB (~4 minutes of audio); session disconnected |
 | `feed_failed` | no | A segment failed to process; skipped, session continues |

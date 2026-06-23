@@ -14,6 +14,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 import app.config as cfg
 from app.api.ws_schemas import SessionCreated, SessionClosed, ErrorMsg
+from app.runtime.stream_recording import StreamRecordingError
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +106,16 @@ async def stream(ws: WebSocket):
             logger.info(f"[stream] 参数因功能未启用被忽略 sid={sid[:8]} params={', '.join(warnings)}")
         if _recording_manager is not None:
             sample_rate = getattr(session, "audio_fs", start_msg.get("audio_fs", cfg.STREAM_SAMPLE_RATE))
-            recorder = _recording_manager.start(
-                wav_name=start_msg.get("wav_name") or "stream",
-                sample_rate=sample_rate,
-            )
+            try:
+                recorder = _recording_manager.start(
+                    wav_name=start_msg.get("wav_name") or "stream",
+                    sample_rate=sample_rate,
+                    recording_id=start_msg.get("recording_id"),
+                )
+            except StreamRecordingError as e:
+                await ws.send_json(ErrorMsg(
+                    code=e.code, message=str(e), fatal=True).model_dump())
+                return
             if recorder is not None:
                 await ws.send_json({"type": "recording.created", **recorder.info})
 

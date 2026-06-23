@@ -100,7 +100,7 @@ WS /v2/asr/stream
 **`start`（首条消息，JSON 文本帧）**：
 
 ```json
-{"type": "start", "audio_fs": 16000, "language": null, "wav_name": "stream"}
+{"type": "start", "audio_fs": 16000, "language": null, "wav_name": "stream", "recording_id": null}
 ```
 
 | 字段 | 默认值 | 说明 |
@@ -108,6 +108,7 @@ WS /v2/asr/stream
 | audio_fs | 16000 | 音频采样率，允许 8000–96000，非 16k 时服务端自动重采样 |
 | language | null | 语言代码，null 为自动检测 |
 | wav_name | "stream" | 会话名（展示用） |
+| recording_id | null | 可选。断线续录时传服务端上次返回的 `recording_id`；若原 WAV 仍存在则追加，若已删除或过期清理则用该 ID 新建 |
 | identify_speakers | false | 对说话人标签做声纹识别（需 `session.created.capabilities.speaker_identification=true`） |
 | noise_filter | 服务端默认 | 本会话覆盖远场段级过滤开关（缺省沿用服务端配置；需 `capabilities.noise_filter_tunable=true`） |
 | energy_floor_dbfs | 服务端默认 | 本会话覆盖绝对能量门（dBFS），范围 `[-90, 0]`，越界回 `invalid_config` |
@@ -137,7 +138,7 @@ WS /v2/asr/stream
 | type | 字段 | 说明 |
 |------|------|------|
 | `session.created` | `protocol`("qwen3-asr-stream") / `protocol_version`("1.0") / `mode` / `backend` / `sample_rate` / `capabilities` / `limits` | 连接建立即下发；`capabilities` 含 `partial_results` / `word_timestamps` / `languages_auto` / `speaker_labels` / `speaker_identification`，以及可调声明 `noise_filter_tunable` / `speaker_tunable` / `endpoint_tunable` / `output_toggles`（标示对应覆盖项本会话是否可调）；`limits` 含 `max_frame_bytes` / `max_backlog_bytes`，超实时推流的客户端应据此控速（参考 `final.end` 反馈的处理进度，保持未处理积压低于上限） |
-| `recording.created` | `recording_id` / `wav_name` | 仅开启 `stream_save_audio` 时出现，在 `start` 校验成功后下发；客户端可用 `recording_id` 下载或删除本次保存的 WAV 录音 |
+| `recording.created` | `recording_id` / `wav_name` / `resumed` | 仅开启 `stream_save_audio` 时出现，在 `start` 校验成功后下发；客户端可用 `recording_id` 下载或删除本次保存的 WAV 录音；`resumed=true` 表示本次正在续写已有 WAV，`resumed=false` 表示新建录音 |
 | `partial` | `seg_id` / `text` | 中间结果（仅 `partial_results=true` 的后端，vad-offline 不产生） |
 | `final` | `seg_id` / `text` / `start` / `end` / `words` / `speaker` / `speaker_name` | 句级定稿结果；`start`/`end` 为毫秒；`words` 仅 `word_timestamps=true` 时存在；`speaker`（匿名标签 A/B/C…）仅 `speaker_labels=true` 且本段可判定时存在；`speaker_name` 仅 `identify_speakers=true` 且声纹命中时存在（说话人标签 / 真名语义见[说话人管理](speakers.md#说话人分离与声纹识别)） |
 | `error` | `code` / `message` / `seg_id` / `fatal` | `fatal=true` 后会话终止 |
@@ -179,10 +180,24 @@ Docker 部署时默认目录对应容器内 `/app/data/stream_recordings`；comp
 原生 `WS /v2/asr/stream` 会下发：
 
 ```json
-{"type": "recording.created", "recording_id": "9f86...", "wav_name": "stream.wav"}
+{"type": "recording.created", "recording_id": "9f86...", "wav_name": "stream.wav", "resumed": false}
 ```
 
 兼容实时接口会在启动确认消息中携带同样信息：OpenAI Realtime 为 `session.updated.session.recording`，DashScope Realtime 为 `task-started.payload.recording`。
+
+断线后如需续写同一份录音，在下一次原生 `WS /v2/asr/stream` 的 `start` 消息中带回上次的 `recording_id`：
+
+```json
+{"type": "start", "audio_fs": 16000, "wav_name": "stream", "recording_id": "9f86..."}
+```
+
+续写成功时服务端返回：
+
+```json
+{"type": "recording.created", "recording_id": "9f86...", "wav_name": "stream.wav", "resumed": true}
+```
+
+续录只影响保存的 WAV 文件，不恢复 ASR 会话状态：重连后 `seg_id`、VAD 缓冲、partial 和说话人聚类状态都会按新会话重新开始。若目标录音仍存在，续写要求采样率 / 声道 / 位深与原 WAV 一致；若目标录音已删除或过期清理，服务端会用传入的 `recording_id` 新建 WAV，并返回 `resumed=false`。客户端需要根据 `resumed` 判断是否真的接上旧录音。同一 `recording_id` 同时只允许一个连接写入。失败时返回致命 `error`，常见 `code` 为 `invalid_recording_id`、`recording_conflict`、`recording_mismatch`。
 
 录音保留时长由 `stream_recording_retention_hours` / `--stream-recording-retention-hours` 控制，默认 `72` 小时，服务启动时清理过期文件，`0` 表示永不自动清理。
 
@@ -232,6 +247,9 @@ curl -X DELETE \
 | code | fatal | 说明 |
 |------|-------|------|
 | `invalid_config` | 是 | `start` 消息校验失败（如 `audio_fs` 越界） |
+| `invalid_recording_id` | 是 | `recording_id` 格式非法 |
+| `recording_conflict` | 是 | 同一 `recording_id` 正在被其它连接写入 |
+| `recording_mismatch` | 是 | 目标 WAV 参数或结构不支持续写（如采样率 / 声道 / 位深不一致） |
 | `frame_too_large` | 否 | 单帧超过 2MB，该帧被丢弃 |
 | `backlog_overflow` | 是 | 处理积压超过 8MB（约 4 分钟音频），会话断开 |
 | `feed_failed` | 否 | 某段音频处理失败，跳过该段继续 |

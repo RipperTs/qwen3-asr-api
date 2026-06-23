@@ -116,6 +116,99 @@ def test_stream_recording_created_and_wav_saved(tmp_path):
         assert wf.getnframes() == 2
 
 
+def test_stream_recording_resumes_existing_wav(tmp_path):
+    import wave
+
+    from app.runtime.stream_recording import StreamRecordingManager
+
+    manager = StreamRecordingManager(
+        enabled=True,
+        directory=str(tmp_path / "recordings"),
+        retention_hours=72,
+    )
+
+    backend1 = FakeBackend()
+    client1 = _make_client(backend1, manager)
+    with client1.websocket_connect("/v2/asr/stream") as ws:
+        ws.receive_json()
+        ws.send_json({"type": "start", "audio_fs": 8000, "wav_name": "mic"})
+        rec = ws.receive_json()
+        assert rec["type"] == "recording.created"
+        assert rec["resumed"] is False
+        ws.send_bytes(b"\x01\x00\x02\x00")
+        assert ws.receive_json()["type"] == "final"
+        ws.send_json({"type": "stop"})
+        assert ws.receive_json()["type"] == "final"
+        assert ws.receive_json()["type"] == "session.closed"
+
+    backend2 = FakeBackend()
+    client2 = _make_client(backend2, manager)
+    with client2.websocket_connect("/v2/asr/stream") as ws:
+        ws.receive_json()
+        ws.send_json({
+            "type": "start",
+            "audio_fs": 8000,
+            "wav_name": "ignored",
+            "recording_id": rec["recording_id"],
+        })
+        resumed = ws.receive_json()
+        assert resumed["type"] == "recording.created"
+        assert resumed["recording_id"] == rec["recording_id"]
+        assert resumed["wav_name"] == "mic.wav"
+        assert resumed["resumed"] is True
+        ws.send_bytes(b"\x03\x00\x04\x00")
+        assert ws.receive_json()["type"] == "final"
+        ws.send_json({"type": "stop"})
+        assert ws.receive_json()["type"] == "final"
+        assert ws.receive_json()["type"] == "session.closed"
+
+    path = manager.path_for(rec["recording_id"])
+    with wave.open(str(path), "rb") as wf:
+        assert wf.getframerate() == 8000
+        assert wf.getnframes() == 4
+        assert wf.readframes(4) == b"\x01\x00\x02\x00\x03\x00\x04\x00"
+
+
+def test_stream_recording_missing_id_creates_new_wav(tmp_path):
+    import wave
+
+    from app.runtime.stream_recording import StreamRecordingManager
+
+    backend = FakeBackend()
+    manager = StreamRecordingManager(
+        enabled=True,
+        directory=str(tmp_path / "recordings"),
+        retention_hours=72,
+    )
+    client = _make_client(backend, manager)
+    with client.websocket_connect("/v2/asr/stream") as ws:
+        ws.receive_json()
+        ws.send_json({
+            "type": "start",
+            "audio_fs": 8000,
+            "recording_id": "a" * 32,
+            "wav_name": "restored",
+        })
+        rec = ws.receive_json()
+        assert rec == {
+            "type": "recording.created",
+            "recording_id": "a" * 32,
+            "wav_name": "restored.wav",
+            "resumed": False,
+        }
+        ws.send_bytes(b"\x01\x00")
+        assert ws.receive_json()["type"] == "final"
+        ws.send_json({"type": "stop"})
+        assert ws.receive_json()["type"] == "final"
+        assert ws.receive_json()["type"] == "session.closed"
+
+    path = manager.path_for("a" * 32)
+    assert path is not None
+    with wave.open(str(path), "rb") as wf:
+        assert wf.getframerate() == 8000
+        assert wf.getnframes() == 1
+
+
 def test_auth_rejected_without_token(monkeypatch):
     monkeypatch.setattr("app.config.API_KEY", "secret")
     client = _make_client(FakeBackend())

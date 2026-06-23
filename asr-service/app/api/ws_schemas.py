@@ -16,6 +16,7 @@ class StartMsg(BaseModel):
     audio_fs: int = 16000
     language: str | None = None
     wav_name: str = "stream"
+    recording_id: str | None = None     # 断线续录：传服务端已返回的 recording_id 追加 WAV
     identify_speakers: bool = False    # 声纹识别（需 speaker_identification 能力）
     # 远场过滤可选覆盖（缺省=服务端默认）；服务端范围钳制，仅影响本会话
     noise_filter: bool | None = None
