@@ -148,7 +148,8 @@ volumes:
 | `--gpu-memory-utilization` | 0–1 | `0.6` | vLLM 显存占用率（×总显存为预算；单流 ASR 无需 0.8） |
 | `--vllm-max-model-len` | 数字 | `32768` | 最大上下文长度；过大会抬高 KV cache 下限，致低占用率起不来 |
 | `--vllm-chunk-size-sec` | 浮点 | `1.0` | 流式解码块大小（秒），越小 partial 越细腻（范围 0.5–5） |
-| `--vllm-max-utterance-sec` | 数字 | `20` | 单句兜底切分（秒），约束上下文/显存增长 |
+| `--vllm-max-utterance-sec` | 数字 | `20` | 前端长句兜底分段（秒），只影响输出卡片粒度 |
+| `--vllm-max-state-sec` | 数字 | `300` | SDK 流式状态生命周期上限（秒），到期重建以约束上下文增长 |
 | `--vllm-concurrency` | 数字 | `1` | 同时解码会话数（generate 串行，>1 无吞吐收益） |
 | `--vllm-end-silence-ms` | 毫秒 | `800` | 能量端点尾静音判停阈值 |
 | `--vllm-enable-align` / `--no-vllm-align` | - | 开启 | 离线 `/v2/asr` 词级时间戳：加载对齐模型（关闭省显存、无 words） |

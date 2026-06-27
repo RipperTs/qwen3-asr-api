@@ -481,6 +481,7 @@ def test_config_vllm_defaults():
     assert cfg.VLLM_CHUNK_SIZE_SEC == 1.0       # V0 实测定档（细腻 partial）
     assert cfg.VLLM_CONCURRENCY == 1            # generate 串行，>1 无吞吐收益
     assert cfg.VLLM_MAX_UTTERANCE_SEC == 20
+    assert cfg.VLLM_MAX_STATE_SEC == 300
     assert cfg.VLLM_ENERGY_FLOOR_DBFS == -45.0
     assert cfg.VLLM_END_SILENCE_MS == 800
     assert cfg.VLLM_ENABLE_ALIGN is True            # 离线词级时间戳默认开
@@ -496,13 +497,15 @@ def test_parse_and_apply_vllm_args(monkeypatch):
     monkeypatch.setattr("sys.argv", [
         "prog", "--no-config", "--serve-mode", "vllm",
         "--gpu-memory-utilization", "0.7", "--vllm-chunk-size-sec", "1.5",
-        "--vllm-max-utterance-sec", "30", "--vllm-concurrency", "2",
+        "--vllm-max-utterance-sec", "30", "--vllm-max-state-sec", "180",
+        "--vllm-concurrency", "2",
         "--vllm-end-silence-ms", "600", "--vllm-offline-chunk-sec", "90",
     ])
     saved = {k: getattr(cfg, k) for k in (
         "VLLM_GPU_MEMORY_UTILIZATION", "VLLM_CHUNK_SIZE_SEC", "VLLM_MAX_UTTERANCE_SEC",
-        "VLLM_CONCURRENCY", "VLLM_END_SILENCE_MS", "VLLM_OFFLINE_CHUNK_SEC",
-        "MODEL_SOURCE", "MAX_SEGMENT_DURATION", "SERVE_MODE", "ENABLE_STREAM")}
+        "VLLM_MAX_STATE_SEC", "VLLM_CONCURRENCY", "VLLM_END_SILENCE_MS",
+        "VLLM_OFFLINE_CHUNK_SEC", "MODEL_SOURCE", "MAX_SEGMENT_DURATION",
+        "SERVE_MODE", "ENABLE_STREAM")}
     try:
         ns = parse_args()
         assert ns.serve_mode == "vllm"
@@ -510,6 +513,7 @@ def test_parse_and_apply_vllm_args(monkeypatch):
         assert cfg.VLLM_GPU_MEMORY_UTILIZATION == 0.7
         assert cfg.VLLM_CHUNK_SIZE_SEC == 1.5
         assert cfg.VLLM_MAX_UTTERANCE_SEC == 30
+        assert cfg.VLLM_MAX_STATE_SEC == 180
         assert cfg.VLLM_CONCURRENCY == 2
         assert cfg.VLLM_END_SILENCE_MS == 600
         assert cfg.VLLM_OFFLINE_CHUNK_SEC == 90
