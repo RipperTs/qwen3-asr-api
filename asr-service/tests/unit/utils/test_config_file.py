@@ -144,6 +144,12 @@ def test_type_and_choices_validation(service_root, data, msg):
         cf.validate_config(data)
 
 
+@pytest.mark.parametrize("value", [0, -1])
+def test_stream_max_session_seconds_rejects_non_positive_config(service_root, value):
+    with pytest.raises(SystemExit, match="stream_max_session_seconds: 期望 >= 1"):
+        cf.validate_config({"stream_max_session_seconds": value})
+
+
 def test_duplicate_key_exits(service_root):
     """YAML 规范默认重复键末值静默胜出——本服务按坏文件硬报错处理。"""
     p = _write(service_root, "device: cpu\nport: 9000\ndevice: cuda\n")

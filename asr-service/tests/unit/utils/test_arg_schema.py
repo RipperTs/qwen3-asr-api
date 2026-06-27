@@ -28,6 +28,7 @@ LEGACY_DEFAULTS = {
     "enable_stream": False,
     "max_stream_sessions": None,
     "stream_asr_concurrency": None,
+    "stream_max_session_seconds": None,
     "realtime_priority_offline_batch_size": None,
     "stream_save_audio": False,
     "stream_recordings_dir": "data/stream_recordings",
@@ -154,6 +155,12 @@ def test_use_punc_dest_compat():
 def test_invalid_choice_rejected():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--device", "tpu"])
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_stream_max_session_seconds_rejects_non_positive_cli(value):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--stream-max-session-seconds", value])
 
 
 def test_keys_and_dests_unique():

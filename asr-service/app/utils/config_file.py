@@ -269,6 +269,9 @@ def validate_config(data: dict, source: str = "<config>") -> dict:
         if spec.choices and value not in spec.choices:
             errors.append(f"{key}: 非法取值 {value!r}，可选 {' | '.join(spec.choices)}")
             continue
+        if spec.min_value is not None and value < spec.min_value:
+            errors.append(f"{key}: 期望 >= {spec.min_value}，实得 {value!r}")
+            continue
         result[spec.attr] = value
     if errors:
         raise SystemExit(f"配置文件校验失败: {source}\n  - " + "\n  - ".join(errors))

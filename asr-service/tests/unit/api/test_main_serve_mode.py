@@ -38,6 +38,7 @@ def isolated_create_app(tmp_path, monkeypatch):
     saved_level = root.level
     keys = ("MODEL_SOURCE", "MAX_SEGMENT_DURATION", "HOST", "PORT", "API_KEY", "MAX_QUEUE_SIZE",
             "SERVE_MODE", "ENABLE_STREAM", "MAX_STREAM_SESSIONS", "STREAM_ASR_CONCURRENCY",
+            "STREAM_MAX_SESSION_SECONDS",
             "STREAM_SAVE_AUDIO", "STREAM_RECORDINGS_DIR", "STREAM_RECORDING_RETENTION_HOURS",
             "CONFIG_FILE", "ENABLE_SPEAKER", "SPEAKER_THRESHOLD", "SPEAKER_MAX",
             "SPEAKER_MIN_SEG_MS", "SPEAKER_MAX_WINDOWS",
@@ -439,6 +440,7 @@ def test_parse_args_defaults(monkeypatch):
     assert args.enable_stream is False
     assert args.max_stream_sessions is None
     assert args.stream_asr_concurrency is None
+    assert args.stream_max_session_seconds is None
     assert args.stream_save_audio is False
     assert args.stream_recordings_dir == "data/stream_recordings"
     assert args.stream_recording_retention_hours == 72
@@ -449,6 +451,7 @@ def test_parse_args_stream_flags(monkeypatch):
     monkeypatch.setattr("sys.argv", [
         "prog", "--no-config", "--serve-mode", "standard", "--enable-stream",
         "--max-stream-sessions", "8", "--stream-asr-concurrency", "3",
+        "--stream-max-session-seconds", "7200",
         "--stream-save-audio", "--stream-recordings-dir", "data/recordings",
         "--stream-recording-retention-hours", "48",
     ])
@@ -456,6 +459,7 @@ def test_parse_args_stream_flags(monkeypatch):
     assert args.enable_stream is True
     assert args.max_stream_sessions == 8
     assert args.stream_asr_concurrency == 3
+    assert args.stream_max_session_seconds == 7200
     assert args.stream_save_audio is True
     assert args.stream_recordings_dir == "data/recordings"
     assert args.stream_recording_retention_hours == 48
@@ -472,6 +476,22 @@ def test_health_echoes_config_file(isolated_create_app, monkeypatch):
     client = TestClient(app)
     assert client.get("/v1/health").json()["config_file"] == "config.yaml"
     assert client.get("/v2/health").json()["config_file"] == "config.yaml"
+
+
+def test_parse_and_apply_stream_max_session_seconds(monkeypatch):
+    import app.config as cfg
+    from app.main import _apply_cli_config, parse_args
+
+    monkeypatch.setattr("sys.argv", [
+        "prog", "--no-config", "--stream-max-session-seconds", "7200",
+    ])
+    saved = cfg.STREAM_MAX_SESSION_SECONDS
+    try:
+        ns = parse_args()
+        _apply_cli_config(ns)
+        assert cfg.STREAM_MAX_SESSION_SECONDS == 7200
+    finally:
+        cfg.STREAM_MAX_SESSION_SECONDS = saved
 
 
 def test_config_vllm_defaults():

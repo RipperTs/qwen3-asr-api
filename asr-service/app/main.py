@@ -166,6 +166,8 @@ def _apply_cli_config(args):
         cfg.MAX_STREAM_SESSIONS = args.max_stream_sessions
     if getattr(args, "stream_asr_concurrency", None) is not None:
         cfg.STREAM_ASR_CONCURRENCY = args.stream_asr_concurrency
+    if getattr(args, "stream_max_session_seconds", None) is not None:
+        cfg.STREAM_MAX_SESSION_SECONDS = args.stream_max_session_seconds
     if getattr(args, "realtime_priority_offline_batch_size", None) is not None:
         cfg.REALTIME_PRIORITY_OFFLINE_BATCH_SIZE = args.realtime_priority_offline_batch_size
     cfg.STREAM_SAVE_AUDIO = getattr(args, "stream_save_audio", False)

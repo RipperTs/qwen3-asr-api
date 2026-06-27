@@ -27,6 +27,7 @@ class ArgSpec:
     default: object = None        # 实义默认值（argparse 一律 SUPPRESS）
     type: type = str              # str / int / float / bool（bool 走 store_true/store_false）
     choices: tuple = None
+    min_value: int | float | None = None
     help: str = ""                # 中文 help
     help_en: str = ""             # 英文 help（lang=en 时启用，空则回退 help）
     dest: str = None              # argparse dest，缺省 = key
@@ -38,6 +39,15 @@ class ArgSpec:
     @property
     def attr(self) -> str:
         return self.dest or self.key
+
+
+def _bounded_type(spec: ArgSpec):
+    def convert(raw):
+        value = spec.type(raw)
+        if spec.min_value is not None and value < spec.min_value:
+            raise argparse.ArgumentTypeError(f"must be >= {spec.min_value}")
+        return value
+    return convert
 
 
 ARG_SPECS = (
@@ -159,6 +169,17 @@ ARG_SPECS = (
         group="实时转写",
         help=f"实时 ASR 解码并发上限 (default: {cfg.STREAM_ASR_CONCURRENCY})",
         help_en=f"Max concurrent realtime ASR decodes (default: {cfg.STREAM_ASR_CONCURRENCY})",
+    ),
+    ArgSpec(
+        key="stream_max_session_seconds",
+        flags=("--stream-max-session-seconds",),
+        default=None,
+        type=int,
+        min_value=1,
+        group="实时转写",
+        help=f"实时单会话最长时长，正整数秒 (default: {cfg.STREAM_MAX_SESSION_SECONDS})",
+        help_en=f"Max realtime session duration, in positive integer seconds "
+                f"(default: {cfg.STREAM_MAX_SESSION_SECONDS})",
     ),
     ArgSpec(
         key="realtime_priority_offline_batch_size",
@@ -592,7 +613,7 @@ def build_parser(lang: str = "zh") -> argparse.ArgumentParser:
             kwargs = dict(dest=spec.attr, default=argparse.SUPPRESS,
                           help=pick(spec.help, spec.help_en))
             if spec.type is not str:
-                kwargs["type"] = spec.type
+                kwargs["type"] = _bounded_type(spec) if spec.min_value is not None else spec.type
             if spec.choices:
                 kwargs["choices"] = spec.choices
             parser.add_argument(*spec.flags, **kwargs)

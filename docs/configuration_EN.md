@@ -60,6 +60,7 @@ All parameters are passed through `bash start.sh <args>`. Config-file key = long
 | `--enable-stream` / `--no-stream` | - | Disabled (enabled in configs generated from the example) | Mount the real-time endpoint `WS /v2/asr/stream` (standard mode) |
 | `--max-stream-sessions` | Number | `16` | Max concurrent real-time sessions (excess connections closed with 1013) |
 | `--stream-asr-concurrency` | Number | `1` | Real-time ASR decoding concurrency cap (the model layer holds an inference lock; >1 brings no gain) |
+| `--stream-max-session-seconds` | Positive integer seconds | `3600` | Max real-time session duration; returns `session_timeout` and closes the connection on timeout |
 | `--realtime-priority-offline-batch-size` | number | `4` | Max standard offline ASR batch size while realtime priority is enabled; lower reduces realtime wait but lowers offline throughput |
 
 ### Far-field Noise Filtering
@@ -335,6 +336,5 @@ Built-in limits not exposed as startup parameters / config-file keys (edit `app/
 | MIN_AUDIO_DURATION | 1.0s | Min audio duration |
 | TASK_TIMEOUT | 1800s | Per-task timeout (30 minutes) |
 | TASK_RESULT_TTL | 3600s | In-memory retention of terminal tasks (persisted history is unaffected) |
-| STREAM_MAX_SESSION_SECONDS | 3600s | Max real-time session duration |
 | STREAM_MAX_FRAME_BYTES | 2MB | Max binary frame size (real-time) |
 | STREAM_MAX_BACKLOG_BYTES | 8MB | Max processing backlog (real-time, disconnects when exceeded) |
