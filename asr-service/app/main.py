@@ -189,6 +189,8 @@ def _apply_cli_config(args):
         cfg.VLLM_CHUNK_SIZE_SEC = args.vllm_chunk_size_sec
     if getattr(args, "vllm_max_utterance_sec", None) is not None:
         cfg.VLLM_MAX_UTTERANCE_SEC = args.vllm_max_utterance_sec
+    if getattr(args, "vllm_max_state_sec", None) is not None:
+        cfg.VLLM_MAX_STATE_SEC = args.vllm_max_state_sec
     if getattr(args, "vllm_concurrency", None) is not None:
         cfg.VLLM_CONCURRENCY = args.vllm_concurrency
     if getattr(args, "vllm_end_silence_ms", None) is not None:
@@ -754,6 +756,7 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         max_sessions=cfg.MAX_STREAM_SESSIONS,
         concurrency=cfg.VLLM_CONCURRENCY,
         max_utterance_sec=cfg.VLLM_MAX_UTTERANCE_SEC,
+        max_state_sec=cfg.VLLM_MAX_STATE_SEC,
         energy_floor_dbfs=cfg.VLLM_ENERGY_FLOOR_DBFS,
         end_silence_ms=cfg.VLLM_END_SILENCE_MS,
         priority_gate=realtime_priority_gate,

@@ -69,6 +69,8 @@ class _MockEngine:
 
     def __init__(self):
         self.feeds = 0
+        self.feed_sizes = []
+        self.finishes = 0
         self.new_states = 0
 
     def new_state(self, language=None, chunk_size_sec=None):
@@ -78,12 +80,26 @@ class _MockEngine:
 
     def feed(self, arr, state):
         self.feeds += 1
+        self.feed_sizes.append(int(arr.size))
         state._acc += "字"
         state.text = state._acc
         return state.text, state.language
 
     def finish(self, state):
+        self.finishes += 1
         state.text = state._acc + "。"
+        return state.text, state.language
+
+
+class _SilenceAwareMockEngine(_MockEngine):
+    """静音 feed 不新增文本，用来覆盖尾静音收尾边界。"""
+
+    def feed(self, arr, state):
+        self.feeds += 1
+        self.feed_sizes.append(int(arr.size))
+        if arr.size and float(np.max(np.abs(arr))) > 0:
+            state._acc += "字"
+        state.text = state._acc
         return state.text, state.language
 
 
@@ -239,6 +255,133 @@ def test_flush_emits_final_for_open_segment():
     assert len(finals) == 1
     assert finals[0]["text"].endswith("。")
     assert sess.state is None
+
+
+def test_utterance_cut_keeps_sdk_state_and_starts_next_ui_segment():
+    eng = _MockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=1, max_state_sec=300)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        msgs = []
+        for _ in range(6):                        # 1.2s 连续语音；1.0s 触发 UI 分段
+            msgs += await _collect(sess.feed_audio(_voice()))
+        return msgs
+
+    msgs = asyncio.run(run())
+    finals = [m for m in msgs if m["type"] == "final"]
+    partials = [m for m in msgs if m["type"] == "partial"]
+
+    assert len(finals) == 1
+    assert finals[0]["seg_id"] == 0
+    assert finals[0]["text"] == "字字字字字"
+    assert partials[-1]["seg_id"] == 1
+    assert partials[-1]["text"] == "字"
+    assert sess.state is not None
+    assert eng.new_states == 1                    # 20s/UI 分段不重建 SDK state
+    assert eng.finishes == 0                      # 未到自然句尾/stop/state 上限，不 finish
+
+
+def test_state_cut_finishes_and_restarts_sdk_state_before_more_audio():
+    eng = _MockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=10, max_state_sec=1)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        msgs = []
+        for _ in range(6):                        # 1.2s 连续语音；1.0s 触发 SDK state 重置
+            msgs += await _collect(sess.feed_audio(_voice()))
+        return msgs
+
+    msgs = asyncio.run(run())
+    finals = [m for m in msgs if m["type"] == "final"]
+    partials = [m for m in msgs if m["type"] == "partial"]
+
+    assert len(finals) == 1
+    assert finals[0]["text"] == "字字字字字。"
+    assert partials[-1]["seg_id"] == 1
+    assert partials[-1]["text"] == "字"
+    assert sess.state is not None
+    assert eng.new_states == 2
+    assert eng.finishes == 1
+
+
+def test_large_frame_is_split_before_state_budget_is_exceeded():
+    eng = _MockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=10, max_state_sec=1)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        return await _collect(sess.feed_audio(_voice(ms=1200)))
+
+    asyncio.run(run())
+    assert max(eng.feed_sizes) <= SR              # 不把超过 state 剩余预算的音频喂进旧 state
+
+
+def test_flush_after_exact_state_cut_does_not_emit_empty_segment():
+    eng = _MockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=10, max_state_sec=1)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        msgs = []
+        msgs += await _collect(sess.feed_audio(_voice(ms=1000)))
+        msgs += await _collect(sess.flush())
+        return msgs
+
+    msgs = asyncio.run(run())
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert len(finals) == 1
+    assert finals[0]["text"]
+
+
+def test_flush_after_utterance_cut_uses_finish_text():
+    eng = _MockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=1, max_state_sec=300)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        msgs = []
+        cut_msgs = await _collect(sess.feed_audio(_voice(ms=1000)))
+        assert [m for m in cut_msgs if m["type"] == "final"] == []
+        msgs += cut_msgs
+        msgs += await _collect(sess.flush())
+        return msgs
+
+    msgs = asyncio.run(run())
+    finals = [m for m in msgs if m["type"] == "final"]
+
+    assert len(finals) == 1
+    assert finals[0]["seg_id"] == 0
+    assert finals[0]["text"] == "字。"
+    assert sess.state is None
+    assert eng.new_states == 1
+    assert eng.finishes == 1
+
+
+def test_utterance_cut_then_trailing_silence_does_not_emit_empty_segment():
+    eng = _SilenceAwareMockEngine()
+    _, sess = _make_session(eng, max_utterance_sec=1, max_state_sec=300, end_silence_ms=800)
+    sess.configure({"audio_fs": 16000})
+
+    async def run():
+        msgs = []
+        cut_msgs = await _collect(sess.feed_audio(_voice(ms=1000)))
+        assert [m for m in cut_msgs if m["type"] == "final"] == []
+        msgs += cut_msgs
+        for _ in range(4):
+            msgs += await _collect(sess.feed_audio(_silence()))   # 仅尾静音，不应新建 UI 段
+        return msgs
+
+    msgs = asyncio.run(run())
+    finals = [m for m in msgs if m["type"] == "final"]
+
+    assert len(finals) == 1
+    assert finals[0]["seg_id"] == 0
+    assert finals[0]["text"] == "字。"
+    assert sess.state is None
+    assert eng.new_states == 1
+    assert eng.finishes == 1
 
 
 def test_feed_audio_silence_only_no_segment():

@@ -253,9 +253,17 @@ ARG_SPECS = (
     ArgSpec(
         key="vllm_max_utterance_sec", flags=("--vllm-max-utterance-sec",),
         default=None, type=int, group="vLLM",
-        help=f"单句兜底切分（秒），约束上下文/显存增长 (default: {cfg.VLLM_MAX_UTTERANCE_SEC})",
-        help_en=f"Per-utterance hard cut (sec); bounds context/memory growth "
+        help=f"前端长句兜底分段（秒），只影响输出卡片粒度 (default: {cfg.VLLM_MAX_UTTERANCE_SEC})",
+        help_en=f"UI fallback segment cut (sec); affects output card granularity only "
                 f"(default: {cfg.VLLM_MAX_UTTERANCE_SEC})",
+    ),
+    ArgSpec(
+        key="vllm_max_state_sec", flags=("--vllm-max-state-sec",),
+        default=None, type=int, group="vLLM",
+        help=f"SDK 流式状态生命周期上限（秒），到期重建以约束上下文增长 "
+             f"(default: {cfg.VLLM_MAX_STATE_SEC})",
+        help_en=f"SDK streaming state lifetime limit (sec); rebuilds state to bound context growth "
+                f"(default: {cfg.VLLM_MAX_STATE_SEC})",
     ),
     ArgSpec(
         key="vllm_concurrency", flags=("--vllm-concurrency",),

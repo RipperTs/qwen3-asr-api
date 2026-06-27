@@ -81,7 +81,8 @@
 | `gpu_memory_utilization` / `--gpu-memory-utilization` | `0.6` | vLLM GPU memory utilization (single-stream ASR needs no 0.8) |
 | `vllm_max_model_len` / `--vllm-max-model-len` | `32768` | Max context length per sequence |
 | `vllm_chunk_size_sec` / `--vllm-chunk-size-sec` | `1.0` | Streaming decode chunk size (smaller = finer partials) |
-| `vllm_max_utterance_sec` / `--vllm-max-utterance-sec` | `20` | Single-utterance fallback cut (sec) |
+| `vllm_max_utterance_sec` / `--vllm-max-utterance-sec` | `20` | UI fallback segment cut (sec); affects output card granularity only |
+| `vllm_max_state_sec` / `--vllm-max-state-sec` | `300` | SDK streaming state lifetime limit (sec); rebuilds state to bound context growth |
 | `vllm_concurrency` / `--vllm-concurrency` | `1` | Concurrent decoding sessions (generate is serial; >1 gives no throughput gain) |
 | `vllm_end_silence_ms` / `--vllm-end-silence-ms` | `800` | Energy-endpoint trailing-silence stop threshold |
 | `vllm_enable_align` / `--vllm-enable-align`·`--no-vllm-align` | on | Offline word-level timestamps (load the aligner model) |

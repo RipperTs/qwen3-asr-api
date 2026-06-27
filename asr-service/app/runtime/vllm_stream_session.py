@@ -57,10 +57,13 @@ class EnergyEndpointer:
     def in_speech(self) -> bool:
         return self._in_speech
 
+    def is_active(self, arr) -> bool:
+        return rms_dbfs(arr) >= self._floor
+
     def process(self, arr, frame_ms=None) -> list:
         """返回事件：[{'type':'start','start':ms}] / [{'type':'end','end':ms}] / []。"""
         dur = int(frame_ms) if frame_ms is not None else int(arr.size * 1000 / _TARGET_SR)
-        active = rms_dbfs(arr) >= self._floor
+        active = self.is_active(arr)
         events, t0 = [], self._t_ms
         self._t_ms += dur
         if active:
@@ -80,7 +83,8 @@ class VllmStreamSession:
     """单个 WS 会话：能量端点断句 + vLLM 流式解码 → 句内 partial / 句尾 final。"""
 
     def __init__(self, sid, engine, endpointer: EnergyEndpointer, executor, infer_sem,
-                 *, language=None, max_utterance_sec=20, priority_gate=None):
+                 *, language=None, max_utterance_sec=20, max_state_sec=300,
+                 priority_gate=None):
         self.sid = sid
         self._engine = engine
         self._endpointer = endpointer
@@ -88,15 +92,19 @@ class VllmStreamSession:
         self._sem = infer_sem                  # asyncio.Semaphore：限同时解码会话数
         self._priority_gate = priority_gate
         self.language = language
-        self._max_utt_samples = int(max_utterance_sec * _TARGET_SR)
+        self._max_utt_samples = max(1, int(max_utterance_sec * _TARGET_SR))
+        self._max_state_samples = max(1, int(max_state_sec * _TARGET_SR))
         # 会话态
         self.audio_fs = _TARGET_SR
         self._chunk_size_sec = None            # None=用引擎默认；configure 可按会话覆盖
-        self.state = None                      # 当前句流式状态（None=无活动句）
+        self.state = None                      # 当前 SDK 流式状态（None=无活动语音）
         self.seg_id = 0
         self._seg_start_ms = None
         self._total_ms = 0                     # 会话累计音频时长（ms）
-        self._utt_samples = 0                  # 当前句已喂样本数
+        self._utt_samples = 0                  # 当前前端分段已喂样本数
+        self._state_samples = 0                # 当前 SDK state 已喂样本数
+        self._committed_text = ""              # 当前 SDK state 内已输出为 final 的全文前缀
+        self._pending_ui_final = None          # 已到 UI 分段阈值，待 SDK finish/后续语音确认后提交
         self._last_partial = ""
 
     def configure(self, cfg_msg: dict) -> list:
@@ -122,10 +130,15 @@ class VllmStreamSession:
         self._seg_start_ms = None
         self._total_ms = 0
         self._utt_samples = 0
+        self._state_samples = 0
+        self._committed_text = ""
+        self._pending_ui_final = None
         self._last_partial = ""
         warnings = [k for k in _UNSUPPORTED_KEYS if cfg_msg.get(k) is not None]
         logger.info(f"[vllm-stream] 会话配置 sid={self.sid[:8]} audio_fs={self.audio_fs} "
                     f"language={self.language} chunk={self._chunk_size_sec or '默认'} "
+                    f"ui_cut={self._max_utt_samples / _TARGET_SR:.0f}s "
+                    f"state_cut={self._max_state_samples / _TARGET_SR:.0f}s "
                     f"忽略项={warnings or '无'}")
         return warnings
 
@@ -133,28 +146,127 @@ class VllmStreamSession:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, fn, *args)
 
-    async def _begin_segment(self, start_ms):
+    async def _infer(self, fn, *args):
+        if self._priority_gate is None:
+            async with self._sem:
+                return await self._in_thread(fn, *args)
+        with self._priority_gate.realtime_section():
+            async with self._sem:
+                return await self._in_thread(fn, *args)
+
+    def _begin_ui_segment(self, start_ms):
         self._seg_start_ms = start_ms
-        self.state = await self._in_thread(self._engine.new_state, self.language, self._chunk_size_sec)
         self._utt_samples = 0
         self._last_partial = ""
 
-    async def _finish_segment(self, end_ms):
-        if self._priority_gate is None:
-            async with self._sem:
-                text, _ = await self._in_thread(self._engine.finish, self.state)
-        else:
-            with self._priority_gate.realtime_section():
-                async with self._sem:
-                    text, _ = await self._in_thread(self._engine.finish, self.state)
-        msg = {"type": "final", "seg_id": self.seg_id, "text": text,
-               "start": int(self._seg_start_ms or 0), "end": int(end_ms)}
-        self.seg_id += 1
-        self.state = None
+    async def _begin_segment(self, start_ms):
+        if self.state is None:
+            self.state = await self._in_thread(self._engine.new_state, self.language, self._chunk_size_sec)
+            self._state_samples = 0
+            self._committed_text = ""
+        self._begin_ui_segment(start_ms)
+
+    def _segment_text(self, full_text: str) -> str:
+        text = full_text or ""
+        if not self._committed_text:
+            return text
+        if text.startswith(self._committed_text):
+            return text[len(self._committed_text):]
+        # SDK 可能回改已提交前缀；旧 final 无法补丁更新，这里按长度截断避免重复刷屏。
+        return text[min(len(self._committed_text), len(text)):]
+
+    def _clear_ui_segment(self):
         self._seg_start_ms = None
         self._utt_samples = 0
         self._last_partial = ""
+
+    def _make_ui_final(self, full_text, start_ms, end_ms):
+        text = self._segment_text(full_text)
+        self._committed_text = full_text or self._committed_text
+        msg = {"type": "final", "seg_id": self.seg_id, "text": text,
+               "start": int(start_ms or 0), "end": int(end_ms)}
+        self.seg_id += 1
+        self._last_partial = ""
         return msg
+
+    def _emit_ui_final(self, full_text, end_ms):
+        msg = self._make_ui_final(full_text, self._seg_start_ms, end_ms)
+        self._clear_ui_segment()
+        return msg
+
+    def _stage_ui_final(self, full_text, end_ms):
+        self._pending_ui_final = {
+            "full_text": full_text or "",
+            "start": self._seg_start_ms,
+            "end": end_ms,
+        }
+        self._clear_ui_segment()
+
+    def _emit_pending_ui_final(self, full_text=None, end_ms=None):
+        if self._pending_ui_final is None:
+            return None
+        pending = self._pending_ui_final
+        self._pending_ui_final = None
+        return self._make_ui_final(
+            pending["full_text"] if full_text is None else full_text,
+            pending["start"],
+            pending["end"] if end_ms is None else end_ms,
+        )
+
+    async def _finish_segment(self, end_ms):
+        text, _ = await self._infer(self._engine.finish, self.state)
+        if self._pending_ui_final is not None:
+            msg = self._emit_pending_ui_final(text, end_ms)
+        elif self._seg_start_ms is None:
+            logger.info(f"[vllm-stream] 关闭 SDK state，无前端分段输出 sid={self.sid[:8]} end={end_ms}ms")
+            msg = None
+        else:
+            msg = self._emit_ui_final(text, end_ms)
+        self.state = None
+        self._state_samples = 0
+        self._committed_text = ""
+        return msg
+
+    async def _feed_piece(self, arr):
+        text, _ = await self._infer(self._engine.feed, arr, self.state)
+        self._state_samples += arr.size
+        if self._seg_start_ms is None:
+            return None
+        self._utt_samples += arr.size
+        seg_text = self._segment_text(text)
+        if seg_text and seg_text != self._last_partial:
+            self._last_partial = seg_text
+            return {"type": "partial", "seg_id": self.seg_id, "text": seg_text}
+        return None
+
+    def _next_piece_samples(self, remaining_samples):
+        limits = [remaining_samples]
+        if self.state is None:
+            limits.append(self._max_state_samples)
+        else:
+            limits.append(max(1, self._max_state_samples - self._state_samples))
+        if self._seg_start_ms is None:
+            limits.append(self._max_utt_samples)
+        else:
+            limits.append(max(1, self._max_utt_samples - self._utt_samples))
+        return max(1, min(limits))
+
+    async def _ensure_active_state(self, start_ms):
+        if self.state is None:
+            await self._begin_segment(start_ms)
+        elif self._seg_start_ms is None:
+            self._begin_ui_segment(start_ms)
+
+    async def _maybe_cut_after_piece(self, end_ms):
+        if self.state is None:
+            return None
+        if self._state_samples >= self._max_state_samples:
+            logger.info(f"[vllm-stream] SDK state 到期重建 sid={self.sid[:8]} end={end_ms}ms")
+            return await self._finish_segment(end_ms)
+        if self._seg_start_ms is not None and self._utt_samples >= self._max_utt_samples:
+            logger.info(f"[vllm-stream] 超长句兜底分段 sid={self.sid[:8]} end={end_ms}ms")
+            self._stage_ui_final(getattr(self.state, "text", ""), end_ms)
+        return None
 
     async def feed_audio(self, pcm_bytes):
         arr = pcm_bytes_to_array(pcm_bytes)
@@ -162,43 +274,51 @@ class VllmStreamSession:
             return
         if self.audio_fs != _TARGET_SR:
             arr = await self._in_thread(resample_to_16k, arr, self.audio_fs)
-        dur_ms = int(arr.size * 1000 / _TARGET_SR)
-        events = self._endpointer.process(arr, frame_ms=dur_ms)
 
-        # 句开始：先建状态，使本帧即进入新句
-        if self.state is None and any(e["type"] == "start" for e in events):
-            await self._begin_segment(self._total_ms)
+        offset = 0
+        while offset < arr.size:
+            n = self._next_piece_samples(arr.size - offset)
+            piece = arr[offset: offset + n]
+            dur_ms = int(piece.size * 1000 / _TARGET_SR)
+            active = self._endpointer.is_active(piece)
+            events = self._endpointer.process(piece, frame_ms=dur_ms)
 
-        # 句内：喂本帧，文本变化则发 partial
-        if self.state is not None:
-            if self._priority_gate is None:
-                async with self._sem:
-                    text, _ = await self._in_thread(self._engine.feed, arr, self.state)
-            else:
-                with self._priority_gate.realtime_section():
-                    async with self._sem:
-                        text, _ = await self._in_thread(self._engine.feed, arr, self.state)
-            self._utt_samples += arr.size
-            if text and text != self._last_partial:
-                self._last_partial = text
-                yield {"type": "partial", "seg_id": self.seg_id, "text": text}
+            start_events = [e for e in events if e["type"] == "start"]
+            if start_events:
+                pending = self._emit_pending_ui_final()
+                if pending is not None:
+                    yield pending
+                await self._ensure_active_state(start_events[0]["start"])
+            elif active and self._seg_start_ms is None:
+                pending = self._emit_pending_ui_final()
+                if pending is not None:
+                    yield pending
+                await self._ensure_active_state(self._total_ms)
 
-        self._total_ms += dur_ms
+            if self.state is not None:
+                partial = await self._feed_piece(piece)
+                if partial is not None:
+                    yield partial
 
-        # 句尾：能量端点判停 → final
-        if self.state is not None and any(e["type"] == "end" for e in events):
-            yield await self._finish_segment(self._total_ms)
-        # 兜底：超长无停顿句强制切分（上下文/显存边界，非性能必需——O(n²) 已被前缀缓存中和）
-        elif self.state is not None and self._utt_samples >= self._max_utt_samples:
-            logger.info(f"[vllm-stream] 超长句兜底切分 sid={self.sid[:8]} end={self._total_ms}ms")
-            yield await self._finish_segment(self._total_ms)
-            if self._endpointer.in_speech:          # 语音仍持续 → 立即开新句
-                await self._begin_segment(self._total_ms)
+            self._total_ms += dur_ms
+            offset += piece.size
+
+            if self.state is not None and any(e["type"] == "end" for e in events):
+                final = await self._finish_segment(self._total_ms)
+                if final is not None:
+                    yield final
+                continue
+
+            cut_msg = await self._maybe_cut_after_piece(self._total_ms)
+            if cut_msg is not None:
+                yield cut_msg
 
     async def flush(self):
         """收到 stop：冲刷未闭合句出 final。"""
         if self.state is not None:
-            yield await self._finish_segment(self._total_ms)
+            final = await self._finish_segment(self._total_ms)
+            if final is not None:
+                yield final
 
 
 class VllmStreamBackend:
@@ -211,10 +331,12 @@ class VllmStreamBackend:
     backend = "vllm-native"
 
     def __init__(self, engine, *, max_sessions=16, concurrency=1, max_utterance_sec=20,
-                 energy_floor_dbfs=-45.0, end_silence_ms=800, priority_gate=None):
+                 max_state_sec=300, energy_floor_dbfs=-45.0, end_silence_ms=800,
+                 priority_gate=None):
         self._engine = engine
         self._max_sessions = max_sessions
         self._max_utterance_sec = max_utterance_sec
+        self._max_state_sec = max_state_sec
         self._energy_floor_dbfs = energy_floor_dbfs
         self._end_silence_ms = end_silence_ms
         self._priority_gate = priority_gate
@@ -244,7 +366,8 @@ class VllmStreamBackend:
             energy_floor_dbfs=self._energy_floor_dbfs, end_silence_ms=self._end_silence_ms)
         return VllmStreamSession(
             sid, self._engine, endpointer, self._executor, self._sem,
-            max_utterance_sec=self._max_utterance_sec, priority_gate=self._priority_gate)
+            max_utterance_sec=self._max_utterance_sec, max_state_sec=self._max_state_sec,
+            priority_gate=self._priority_gate)
 
     def release(self, session):
         try:
