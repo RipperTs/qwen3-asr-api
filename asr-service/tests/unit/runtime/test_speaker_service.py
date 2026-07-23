@@ -395,6 +395,61 @@ def test_auto_enroll_hit_does_not_re_enroll(env, store):
     assert store.speaker_count == 1                      # 命中不重复建档（防投毒）
 
 
+def test_auto_enroll_serializes_identify_and_enroll(
+    env, store, monkeypatch
+):
+    svc = make_service(store)
+    original_identify = store.identify
+    first_identify_entered = threading.Event()
+    second_identify_entered = threading.Event()
+    second_worker_started = threading.Event()
+    release_first_identify = threading.Event()
+    call_count = 0
+    call_count_lock = threading.Lock()
+
+    def blocking_identify(*args, **kwargs):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+            current_call = call_count
+        if current_call == 1:
+            first_identify_entered.set()
+            if not release_first_identify.wait(timeout=2):
+                raise AssertionError("测试未放行首次识别")
+        else:
+            second_identify_entered.set()
+        return original_identify(*args, **kwargs)
+
+    results = {}
+
+    def run(label):
+        if label == "B":
+            second_worker_started.set()
+        results[label] = svc.map_and_enroll_clusters(
+            [_cluster(label, unit(0), 12.0)]
+        )[0]
+
+    monkeypatch.setattr(store, "identify", blocking_identify)
+    first_thread = threading.Thread(target=run, args=("A",))
+    second_thread = threading.Thread(target=run, args=("B",))
+    first_thread.start()
+    assert first_identify_entered.wait(timeout=2)
+    second_thread.start()
+    assert second_worker_started.wait(timeout=2)
+    try:
+        assert not second_identify_entered.wait(timeout=0.2)
+    finally:
+        release_first_identify.set()
+    first_thread.join(timeout=2)
+    second_thread.join(timeout=2)
+
+    assert not first_thread.is_alive() and not second_thread.is_alive()
+    assert second_identify_entered.is_set()
+    assert store.speaker_count == 1
+    assert results["A"]["speaker_id"] == results["B"]["speaker_id"]
+    assert sum("auto_enrolled" in result for result in results.values()) == 1
+
+
 def test_auto_enroll_failure_falls_back_anonymous(env, store):
     svc = make_service(store)
     store.close()                                        # alloc/enroll 将失败

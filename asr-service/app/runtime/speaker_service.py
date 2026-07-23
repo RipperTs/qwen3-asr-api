@@ -327,6 +327,7 @@ class SpeakerService:
         speaker_auto_enroll 且簇语音总时长过门槛 → 以「说话人_NN」占位名登记
         （source='auto'；开启自动登记 = 部署方声明已获数据主体同意，consent 同责）。
         已命中的说话人不自动追加模板（防投毒）。登记失败退回匿名，不影响转写。
+        识别与可能的自动登记在同一服务锁内完成，避免并发任务重复建档。
         id_threshold/id_margin 缺省=服务端 cfg（支持按请求覆盖）。
         cancelled 触发后停止处理剩余簇，返回已完成的映射。
         """
@@ -338,30 +339,49 @@ class SpeakerService:
                 break
             label = c.get("label", "?")
             try:
-                hit = self.store.identify(c["centroid"], threshold=thr, margin=mgn)
-                if cancelled and cancelled():
-                    break
+                with self._speaker_data_lock:
+                    if cancelled and cancelled():
+                        break
+                    hit = self.store.identify(
+                        c["centroid"], threshold=thr, margin=mgn
+                    )
+                    if cancelled and cancelled():
+                        break
+                    if hit:
+                        mapping = {"label": label, **hit}
+                    else:
+                        dur = float(c.get("dur_sec") or 0.0)
+                        if (
+                            cfg.SPEAKER_AUTO_ENROLL
+                            and dur >= cfg.SPEAKER_AUTO_ENROLL_MIN_SEC
+                        ):
+                            if cancelled and cancelled():
+                                break
+                            name = self.store.alloc_auto_name()
+                            if cancelled and cancelled():
+                                break
+                            sid = self.store.enroll_speaker(
+                                name,
+                                None,
+                                [np.asarray(c["centroid"], dtype=np.float32)],
+                                [dur],
+                                consent=True,
+                                source="auto",
+                            )
+                            mapping = {
+                                "label": label,
+                                "speaker_id": sid,
+                                "name": name,
+                                "score": None,
+                                "auto_enrolled": True,
+                            }
+                        else:
+                            mapping = self._anon(label)
                 self.store.audit("identify", hit["speaker_id"] if hit else None,
                                  {"matched": hit is not None,
                                   "score": hit["score"] if hit else None,
                                   "label": label, "via": "offline"})
-                if hit:
-                    out.append({"label": label, **hit})
-                    continue
-                dur = float(c.get("dur_sec") or 0.0)
-                if cfg.SPEAKER_AUTO_ENROLL and dur >= cfg.SPEAKER_AUTO_ENROLL_MIN_SEC:
-                    if cancelled and cancelled():
-                        break
-                    name = self.store.alloc_auto_name()
-                    if cancelled and cancelled():
-                        break
-                    sid = self.store.enroll_speaker(
-                        name, None, [np.asarray(c["centroid"], dtype=np.float32)],
-                        [dur], consent=True, source="auto")
-                    out.append({"label": label, "speaker_id": sid, "name": name,
-                                "score": None, "auto_enrolled": True})
-                else:
-                    out.append(self._anon(label))
+                out.append(mapping)
             except Exception as e:
                 logger.warning(f"簇识别/自动登记失败，退回匿名: {e}")
                 out.append(self._anon(label))
