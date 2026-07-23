@@ -26,13 +26,13 @@ class FakeSpeakerEngine:
     def __init__(self):
         self.calls: list[list] = []
 
-    def embed_windows(self, wav, windows):
+    def embed_windows(self, wav, windows, *, cancelled=None):
         self.calls.append(list(windows))
         return np.stack([_unit(0 if st < 5.0 else 1) for st, _ in windows])
 
 
 class BoomSpeakerEngine:
-    def embed_windows(self, wav, windows):
+    def embed_windows(self, wav, windows, *, cancelled=None):
         raise RuntimeError("boom")
 
 

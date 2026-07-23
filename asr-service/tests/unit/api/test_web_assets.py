@@ -91,6 +91,8 @@ def test_stream_js_protocol_markers():
     assert "/v2/asr/stream" in src
     assert "/v2/capabilities" in src
     assert "/web-ui/assets/pcm-worklet.js" in src
+    assert "stream.speaker_labels" in src
+    assert "stream.speaker_identification" in src
 
 
 def test_speakers_js_management_markers():

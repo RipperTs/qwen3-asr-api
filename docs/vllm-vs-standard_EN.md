@@ -36,8 +36,8 @@
   - **Long-audio chunked transcription** (see 2.5).
 
 ### 2.3 Speaker diarization / identification
-- Speaker capabilities (`--enable-speaker` / voiceprint DB `--enable-speaker-db`) are **supported in both modes** with identical output fields.
-- vLLM difference: the voiceprint engine is the same CAM++, but **speech regions come from an energy VAD instead of FSMN-VAD** (dependency-neutral, no funasr, coarser boundaries); realtime streaming still carries no speaker labels (offline only).
+- Speaker capabilities (`--enable-speaker` / voiceprint DB `--enable-speaker-db`) are **supported by both offline and realtime paths in both modes**: realtime emits anonymous `speaker` only on sentence-level `final` events and adds `speaker_name` when a voiceprint matches; unstable short segments may remain unlabeled, and `partial` never carries a speaker.
+- vLLM uses the same CAM++ voiceprint engine, but replaces FSMN-VAD with energy detection for offline speech regions and realtime endpointing (dependency-neutral, no funasr, coarser boundaries). At sentence end, realtime extracts one embedding for that sentence and clusters it online; it never blocks or revises already-emitted partials.
 
 ### 2.4 Compatibility APIs (OpenAI / DashScope)
 - Offline compatibility (OpenAI `audio/transcriptions`, DashScope recorded-file recognition) is **supported in both modes**.
@@ -64,7 +64,7 @@
 | Offline `/v2/asr` | ✅ | ✅ (same contract) |
 | Segmentation | FSMN-VAD fine segmentation | punctuation-first (word-timestamp positioning) |
 | Punctuation | CT-Transformer (can disable) | model-native (always on, not separately disableable) |
-| Speaker diarization / ID | ✅ (FSMN-VAD + CAM++) | ✅ (energy VAD + CAM++) |
+| Speaker diarization / ID | ✅ (FSMN-VAD + CAM++; realtime final) | ✅ (energy endpoint + CAM++; realtime final) |
 | Compat offline (OpenAI/DashScope) | ✅ | ✅ |
 | Compat realtime — whole sentence | ✅ (needs `--enable-stream`) | ✅ (with compat switches, no `--enable-stream`) |
 | Compat realtime — per-token/intermediate | ❌ | ✅ DashScope intermediate / OpenAI delta(best-effort) |
@@ -123,7 +123,7 @@
 ## 7. Known trade-offs and limitations
 
 - **GPU only**: vLLM mode does not support CPU, and there is no CPU container.
-- **Quality trade-offs**: segmentation (punctuation-first / word-gap) and speaker speech regions (energy VAD) are weaker than standard's FSMN; punctuation cannot be disabled individually. Use standard for high-fidelity segmentation/punctuation/realtime-speaker needs.
+- **Quality trade-offs**: segmentation (punctuation-first / word-gap) and speaker speech regions (energy detection) are weaker than standard's FSMN; punctuation cannot be disabled individually. Prefer standard when precise boundaries and independent punctuation control matter.
 - **OpenAI realtime delta is best-effort**: the protocol expects incremental fragments while vLLM partials are cumulative and revisable; revision frames are skipped and the authoritative full text is the `completed` event.
 - **Concurrency**: in-process synchronous inference; `workers=1`, and raising `concurrency` yields no throughput gain.
 

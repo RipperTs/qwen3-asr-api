@@ -238,6 +238,36 @@ def test_dashscope_full_flow(ws_app):
         assert finished["header"]["event"] == "task-finished"
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_dashscope_maps_diarization_option(ws_app, enabled):
+    session = FakeSession()
+    backend = FakeBackend(session_factory=lambda: session)
+    client = ws_app(backend)
+    with client.websocket_connect(DASHSCOPE_WS) as ws:
+        ws.send_json({
+            "header": {"action": "run-task", "task_id": "task-1"},
+            "payload": {"parameters": {"diarization_enabled": enabled}},
+        })
+        assert ws.receive_json()["header"]["event"] == "task-started"
+        assert session.configured[-1]["diarize"] is enabled
+
+
+def test_dashscope_final_includes_speaker_id(ws_app):
+    backend = FakeBackend(session_factory=lambda: FakeSession(
+        flush_finals=[dict(FINAL, speaker="B")]))
+    client = ws_app(backend)
+    with client.websocket_connect(DASHSCOPE_WS) as ws:
+        ws.send_json({
+            "header": {"action": "run-task", "task_id": "task-1"},
+            "payload": {"parameters": {"diarization_enabled": True}},
+        })
+        assert ws.receive_json()["header"]["event"] == "task-started"
+        ws.send_json({"header": {"action": "finish-task"}})
+        result = ws.receive_json()
+        assert result["payload"]["output"]["sentence"]["speaker_id"] == 1
+        assert ws.receive_json()["header"]["event"] == "task-finished"
+
+
 def test_dashscope_connection_reuse(ws_app):
     backend = FakeBackend()
     client = ws_app(backend)

@@ -1,7 +1,7 @@
-"""实时流式优先门控。
+"""实时推理优先门控。
 
-离线任务在每个 GPU 推理时间片前调用 wait_realtime_clear；实时推理进入
-realtime_section 后，离线会在下一个时间片边界让路。模型调用内部不可抢占。
+离线任务在每个可抢占批次前调用 wait_realtime_clear；实时推理进入
+realtime_section 后，离线会在下一个批次边界让路。单次模型调用内部不可抢占。
 """
 from contextlib import contextmanager
 import threading

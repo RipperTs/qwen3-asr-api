@@ -85,7 +85,7 @@ def run_vllm_offline(engine, task, *, progress_callback=None, cancelled=None,
             speakers = _diarize_and_identify(
                 speaker_engine, speaker_service, energy_vad, wav_path, segments, duration,
                 identify_speakers=identify_speakers, id_threshold=id_threshold, id_margin=id_margin,
-                progress_callback=progress_callback)
+                progress_callback=progress_callback, cancelled=cancelled)
 
         if progress_callback:
             progress_callback(1.0)
@@ -236,7 +236,7 @@ def _collect_warnings(engine, opts: dict, identify_speakers: bool, *,
 
 def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path, segments,
                           duration, *, identify_speakers, id_threshold, id_margin,
-                          progress_callback=None):
+                          progress_callback=None, cancelled=None):
     """说话人分离（+可选声纹识别/自动登记），就地给 segments 叠加 speaker/speaker_name。
 
     返回 speakers（labels_in_order 列表，或识别后带 speaker_id/name 的簇映射），无法分离
@@ -252,6 +252,8 @@ def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path,
     speakers = None
     diar = None
     try:
+        if cancelled and cancelled():
+            raise InterruptedError("说话人处理已取消")
         # wav 读一次：VAD 区间与声纹滑窗共用同一数组（阶段 0 已保证 16k 单声道）
         wav, sr = sf.read(wav_path, dtype="float32")
         if wav.ndim > 1:                                  # 兜底：多声道取均值
@@ -268,8 +270,13 @@ def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path,
         if len(windows) > cfg.SPEAKER_MAX_WINDOWS:        # 抽稀防谱聚类 N² 亲和阵内存
             k = -(-len(windows) // cfg.SPEAKER_MAX_WINDOWS)
             windows = windows[::k]
-        embeddings = speaker_engine.embed_windows(wav, windows)
+        embeddings = speaker_engine.embed_windows(
+            wav, windows, cancelled=cancelled)
+        if cancelled and cancelled():
+            raise InterruptedError("说话人处理已取消")
         labels = cluster_offline(embeddings, max_speakers=cfg.SPEAKER_MAX)
+        if cancelled and cancelled():
+            raise InterruptedError("说话人处理已取消")
         diar = DiarizationResult(windows, labels, embeddings)
         for seg in segments:
             label = diar.label_for(seg["start"], seg["end"])
@@ -277,15 +284,22 @@ def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path,
                 seg["speaker"] = label
         speakers = diar.labels_in_order
         logger.info(f"[vllm-offline] 说话人分离完成: {len(speakers)} 人 {speakers}")
+    except InterruptedError:
+        logger.info("[vllm-offline] 任务已取消，停止说话人处理")
+        return None
     except Exception as e:
         logger.warning(f"说话人分离失败，跳过: {e}")
 
     # 声纹识别 + 自动登记（可选）：speakers 升级为带 speaker_id/name 的映射表；
     # map_and_enroll_clusters 永不抛错（失败退回匿名）
-    if identify_speakers and speaker_service is not None and diar is not None:
+    if (identify_speakers and speaker_service is not None and diar is not None
+            and not (cancelled and cancelled())):
         try:
             mapping = speaker_service.map_and_enroll_clusters(
-                diar.clusters, id_threshold=id_threshold, id_margin=id_margin)
+                diar.clusters, id_threshold=id_threshold, id_margin=id_margin,
+                cancelled=cancelled)
+            if cancelled and cancelled():
+                return speakers
             name_of = {m["label"]: m for m in mapping}
             for seg in segments:
                 m = name_of.get(seg.get("speaker"))
@@ -297,7 +311,7 @@ def _diarize_and_identify(speaker_engine, speaker_service, energy_vad, wav_path,
         except Exception as e:
             logger.warning(f"声纹识别失败，跳过: {e}")
 
-    if progress_callback:
+    if progress_callback and not (cancelled and cancelled()):
         progress_callback(0.95)
     return speakers
 

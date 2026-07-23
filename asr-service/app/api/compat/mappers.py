@@ -180,7 +180,7 @@ def v2status_to_dashscope(status: str | None) -> str:
 
 
 def _speaker_to_int(label) -> int | None:
-    """说话人标签（A/B/C… 或已是整数）→ DashScope 整型 speaker_id。"""
+    """说话人标签（A..Z/Z1.. 或已是整数）→ DashScope 整型 speaker_id。"""
     if label is None:
         return None
     if isinstance(label, int):
@@ -188,8 +188,11 @@ def _speaker_to_int(label) -> int | None:
     s = str(label).strip()
     if s.isdigit():
         return int(s)
-    if len(s) == 1 and s.isalpha():
-        return ord(s.upper()) - ord("A")   # A→0, B→1 …
+    upper = s.upper()
+    if len(upper) == 1 and "A" <= upper <= "Z":
+        return ord(upper) - ord("A")       # A→0, B→1 …
+    if upper.startswith("Z") and upper[1:].isdigit():
+        return 25 + int(upper[1:])         # Z1→26, Z2→27 …
     return None
 
 
@@ -272,6 +275,9 @@ def final_to_dashscope_result(final: dict, task_id: str) -> dict:
         "text": final.get("text", ""),
         "sentence_end": True,
     }
+    speaker_id = _speaker_to_int(final.get("speaker"))
+    if speaker_id is not None:
+        sentence["speaker_id"] = speaker_id
     words = _realtime_words_ms(final)
     if words:
         sentence["words"] = words

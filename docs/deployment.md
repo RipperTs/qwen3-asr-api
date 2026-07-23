@@ -177,11 +177,11 @@ bash docker/build.sh   # 选择 "4) vLLM"
 
 > vLLM 引擎在独立 EngineCore 子进程持有 GPU，服务固定单 worker（容器内 PID 1 收割子进程）。模型用 HF 全精度 `models/asr/0.6b`/`1.7b`（与 standard 共用 `models/` 挂载）。
 >
-> **离线词级时间戳 / 说话人所需模型**：`--vllm-enable-align`（默认开）需对齐器 `models/asr/aligner`（Qwen3-ForcedAligner，HF 直拉）；`--enable-speaker` 需声纹模型 `models/speaker/campplus`（CAM++，仅 ModelScope 提供）——`requirements-vllm.txt` 已含 `modelscope` 兜底自动下载，生产建议预挂该目录以免运行时联网。说话人聚类依赖 `scipy`/`scikit-learn`（同已含）。
+> **离线词级时间戳与离线/实时说话人所需模型**：`--vllm-enable-align`（默认开）需对齐器 `models/asr/aligner`（Qwen3-ForcedAligner，HF 直拉）；`--enable-speaker` 需声纹模型 `models/speaker/campplus`（CAM++，仅 ModelScope 提供）——`requirements-vllm.txt` 已含 `modelscope` 兜底自动下载，生产建议预挂该目录以免运行时联网。说话人聚类依赖 `scipy`/`scikit-learn`（同已含）。
 >
 > ⚠️ **长音频对齐 OOM**：ForcedAligner 在主进程加载，显存**不计入 `--gpu-memory-utilization`**（该参数只约束 vLLM EngineCore 子进程）。`transcribe` 内部按 ≤180s 切块，但默认把一个文件的**全部块一次性**喂对齐器前向——长音频（如 30 分钟）激活叠加报 `CUDA out of memory`（短音频只 1 块、不受影响）。对策（按推荐序）：① `--vllm-infer-batch-size`（默认已改为 4）逐批对齐、峰值显存随批大小下降，长音频仍 OOM 则降到 1；② `--vllm-align-device cpu`（对齐器移 CPU，无 GPU 争用，较慢）；③ 降 `--gpu-memory-utilization` 留更多余量；④ `--no-vllm-align`。详见[配置文档](configuration.md#vllm-原生流式模式路线-a)。
 
-> **兼容接口（OpenAI/DashScope）与离线说话人**：vLLM 模式同样支持 `--enable-openai-api`/`--enable-dashscope-api`（离线 + 实时 WS）与 `--enable-speaker`/`--enable-speaker-db`（离线说话人分离/识别，CAM++，语音区间用能量 VAD，弱于 standard 的 FSMN）。与 standard 的关键差异——vLLM 流式恒开，**实时兼容随兼容开关自动挂载、无需 `--enable-stream`**，且实时支持逐字增量（DashScope 中间结果干净直发 / OpenAI delta best-effort）。本地启动用独立环境（非默认 venv）：`venv-vllm/bin/python -m app.main --serve-mode vllm …`（Docker 已由上面的 compose 封装；vLLM 必 CUDA，非 GPU 设备直接退出）。能力与协议详见[兼容接口文档](api/compat.md)。
+> **兼容接口（OpenAI/DashScope）与说话人**：vLLM 模式同样支持 `--enable-openai-api`/`--enable-dashscope-api`（离线 + 实时 WS）与 `--enable-speaker`/`--enable-speaker-db`（离线 + 实时 final 的说话人分离/识别，CAM++；能量检测边界弱于 standard 的 FSMN）。与 standard 的关键差异——vLLM 流式恒开，**实时兼容随兼容开关自动挂载、无需 `--enable-stream`**，且实时支持逐字增量（DashScope 中间结果干净直发，句末可带 `speaker_id` / OpenAI delta best-effort 且无说话人字段）。本地启动用独立环境（非默认 venv）：`venv-vllm/bin/python -m app.main --serve-mode vllm …`（Docker 已由上面的 compose 封装；vLLM 必 CUDA，非 GPU 设备直接退出）。能力与协议详见[兼容接口文档](api/compat.md)。
 
 #### vLLM 启动日志说明（常见现象，非故障）
 

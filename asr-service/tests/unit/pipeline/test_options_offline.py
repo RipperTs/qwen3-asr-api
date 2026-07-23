@@ -10,7 +10,7 @@ DIM = 192
 
 
 class FakeSpeakerEngine:
-    def embed_windows(self, wav, windows):
+    def embed_windows(self, wav, windows, *, cancelled=None):
         v = np.zeros((len(windows), DIM), dtype=np.float32)
         v[:, 0] = 1.0
         return v

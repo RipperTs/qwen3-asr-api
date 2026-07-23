@@ -106,6 +106,7 @@ class StreamCapabilities(BaseModel):
     partial_results: bool = False
     word_timestamps: bool = False
     speaker_labels: bool = False      # 实时 final.speaker（匿名 A/B/C…）
+    speaker_identification: bool = False  # 实时 final.speaker_name（声纹库命中时）
     save_audio: bool = False          # 是否保存实时录音 WAV
     recording_retention_hours: int = 72
     recording_download_path: str | None = None

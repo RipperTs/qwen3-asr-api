@@ -4,6 +4,7 @@
 端到端（result schema 同 standard、progress、cancelled 早退、with_words 透传）。
 dependency-neutral：standard venv 即可运行。
 """
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -188,7 +189,7 @@ class _SpeakerEngine:
     """mock CAM++：所有窗回放同一归一化向量 → cluster_offline 归为单簇 A。"""
     EMB_DIM = 192
 
-    def embed_windows(self, wav, windows):
+    def embed_windows(self, wav, windows, *, cancelled=None):
         v = np.zeros((len(windows), self.EMB_DIM), dtype=np.float32)
         v[:, 0] = 1.0
         return v
@@ -203,7 +204,8 @@ class _SpeakerService:
     def __init__(self):
         self.calls = []
 
-    def map_and_enroll_clusters(self, clusters, *, id_threshold=None, id_margin=None):
+    def map_and_enroll_clusters(self, clusters, *, id_threshold=None, id_margin=None,
+                                cancelled=None):
         self.calls.append((clusters, id_threshold, id_margin))
         return [{"label": "A", "speaker_id": "sp1", "name": "张三", "score": 0.9}]
 
@@ -248,6 +250,36 @@ def test_run_with_identification(patched_spk):
     assert r["speakers"] == [{"label": "A", "speaker_id": "sp1", "name": "张三", "score": 0.9}]
     assert all(s.get("speaker_name") == "张三" for s in r["segments"])
     assert svc.calls and svc.calls[0][1] == 0.4        # id_threshold 透传
+
+
+def test_run_cancelled_during_embedding_skips_identification(patched_spk):
+    cancel_event = threading.Event()
+
+    class CancellingSpeakerEngine(_SpeakerEngine):
+        def embed_windows(self, wav, windows, *, cancelled=None):
+            assert cancelled is not None
+            cancel_event.set()
+            raise InterruptedError("cancelled")
+
+    eng = _Engine(align=True, result=_spk_trans())
+    svc = _SpeakerService()
+    task = {
+        "task_id": "i-cancel",
+        "file_path": "/x.wav",
+        "identify_speakers": True,
+        "options": {"diarize": True},
+    }
+    result = vo.run_vllm_offline(
+        eng,
+        task,
+        cancelled=cancel_event.is_set,
+        speaker_engine=CancellingSpeakerEngine(),
+        speaker_service=svc,
+        energy_vad=_EnergyVAD(),
+    )
+
+    assert "speakers" not in result
+    assert svc.calls == []
 
 
 def test_run_diarize_disabled_no_speakers(patched_spk):

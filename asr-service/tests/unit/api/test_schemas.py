@@ -144,7 +144,9 @@ def test_health_response_with_capabilities():
 # ─── S 系列：说话人分离字段（全部可选，向后兼容）───
 
 def test_stream_capabilities_speaker_labels_default():
-    assert schemas.StreamCapabilities().speaker_labels is False
+    stream = schemas.StreamCapabilities()
+    assert stream.speaker_labels is False
+    assert stream.speaker_identification is False
 
 
 def test_capabilities_response_speaker_labels_default():

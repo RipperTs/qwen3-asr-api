@@ -766,6 +766,7 @@ def test_standard_mode_speaker_enabled(isolated_create_app, monkeypatch):
     caps = client.get("/v2/capabilities").json()
     assert caps["speaker_labels"] is True
     assert caps["stream"]["speaker_labels"] is True
+    assert caps["stream"]["speaker_identification"] is False
     assert client.get("/v2/health").json()["speaker_enabled"] is True
 
     with client.websocket_connect("/v2/asr/stream") as ws:
@@ -895,7 +896,8 @@ def test_speaker_db_enabled_full_path(isolated_create_app, monkeypatch, tmp_path
     monkeypatch.setattr(
         "app.engines.speaker_embedding_engine.SpeakerEmbeddingEngine", _OkSpeaker)
 
-    app = main.create_app(_args(device="auto", enable_speaker=True, api_key="k",
+    app = main.create_app(_args(device="auto", enable_speaker=True, enable_stream=True,
+                                api_key="k",
                                 enable_speaker_db=True,
                                 speaker_db_path=str(tmp_path / "spk.db")))
     client = TestClient(app)
@@ -904,6 +906,7 @@ def test_speaker_db_enabled_full_path(isolated_create_app, monkeypatch, tmp_path
     assert health["speaker_db_enabled"] is True
     caps = client.get("/v2/capabilities", headers=auth).json()
     assert caps["speaker_identification"] is True
+    assert caps["stream"]["speaker_identification"] is True
     body = client.get("/v2/speakers", headers=auth).json()
     assert body == {"total": 0, "speakers": []}          # 空库可列
 
@@ -935,12 +938,16 @@ def test_speaker_db_degrades_on_store_failure(isolated_create_app, monkeypatch, 
 # ─── vLLM 模式 Phase 2：说话人分离 / 声纹库装配 ───
 
 def test_vllm_mode_speaker_enabled(isolated_create_app, monkeypatch):
-    """vllm + --enable-speaker：离线说话人分离装配，capabilities/health 置位；流式说话人仍无。"""
+    """vllm + --enable-speaker：离线与实时说话人能力同时装配。"""
     import app.main as main
+    from app.runtime.realtime_priority import RealtimePriorityGate
+
     _mock_vllm_engine(monkeypatch)
+    captured = {}
 
     class FakeSpeaker:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **k):
+            captured["priority_gate"] = k.get("priority_gate")
         def load(self): pass
 
     monkeypatch.setattr(
@@ -950,9 +957,18 @@ def test_vllm_mode_speaker_enabled(isolated_create_app, monkeypatch):
     client = TestClient(app)
 
     caps = client.get("/v2/capabilities").json()
-    assert caps["speaker_labels"] is True              # 离线分离
-    assert caps["stream"]["speaker_labels"] is False   # 流式说话人仍无（仅离线）
+    assert caps["speaker_labels"] is True
+    assert caps["stream"]["speaker_labels"] is True
+    assert caps["stream"]["speaker_identification"] is False
+    assert caps["defaults"]["speaker_threshold"] == 0.5
+    assert caps["defaults"]["speaker_min_seg_ms"] == 1500
     assert client.get("/v2/health").json()["speaker_enabled"] is True
+    assert isinstance(captured["priority_gate"], RealtimePriorityGate)
+
+    with client.websocket_connect("/v2/asr/stream") as ws:
+        created = ws.receive_json()
+        assert created["capabilities"]["speaker_labels"] is True
+        assert created["capabilities"]["speaker_identification"] is False
 
 
 def test_vllm_mode_speaker_load_failure_degrades(isolated_create_app, monkeypatch):
@@ -988,7 +1004,9 @@ def test_vllm_mode_speaker_db_full_path(isolated_create_app, monkeypatch, tmp_pa
     client = TestClient(app)
     auth = {"Authorization": "Bearer k"}
     assert client.get("/v2/health", headers=auth).json()["speaker_db_enabled"] is True
-    assert client.get("/v2/capabilities", headers=auth).json()["speaker_identification"] is True
+    caps = client.get("/v2/capabilities", headers=auth).json()
+    assert caps["speaker_identification"] is True
+    assert caps["stream"]["speaker_identification"] is True
     assert client.get("/v2/speakers", headers=auth).json() == {"total": 0, "speakers": []}
 
 

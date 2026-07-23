@@ -656,11 +656,12 @@
           const r = await fetch('/v2/capabilities');
           if (r.ok) {
             const c = await r.json();
-            canIdentify.value = !!c.speaker_identification;
-            streamDisabled.value = !(c.stream && c.stream.enabled);
-            srv.words = !!(c.stream && c.stream.word_timestamps);
-            srv.speaker = !!c.speaker_labels;
-            srv.speakerDb = !!c.speaker_identification;
+            const stream = c.stream || {};
+            canIdentify.value = !!stream.speaker_identification;
+            streamDisabled.value = !stream.enabled;
+            srv.words = !!stream.word_timestamps;
+            srv.speaker = !!stream.speaker_labels;
+            srv.speakerDb = !!stream.speaker_identification;
             srv.defaults = c.defaults || {};
           }
           const h = await fetch('/v2/health');     // punc 能力仅 health 暴露

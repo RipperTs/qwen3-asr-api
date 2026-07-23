@@ -73,6 +73,21 @@ def test_dashscope_result_no_words():
     assert "words" not in ev["payload"]["output"]["sentence"]
 
 
+def test_dashscope_result_maps_final_speaker():
+    ev = final_to_dashscope_result(dict(FINAL, speaker="B"), "t")
+    assert ev["payload"]["output"]["sentence"]["speaker_id"] == 1
+
+
+def test_dashscope_result_maps_extended_speaker_label():
+    ev = final_to_dashscope_result(dict(FINAL, speaker="Z1"), "t")
+    assert ev["payload"]["output"]["sentence"]["speaker_id"] == 26
+
+
+def test_dashscope_result_omits_unknown_speaker():
+    ev = final_to_dashscope_result(dict(FINAL, speaker="unknown"), "t")
+    assert "speaker_id" not in ev["payload"]["output"]["sentence"]
+
+
 # ─── R2 增量映射（partial）───
 
 def test_dashscope_partial_intermediate():
@@ -84,6 +99,7 @@ def test_dashscope_partial_intermediate():
     assert sent["text"] == "你好世"
     assert sent["begin_time"] is None and sent["end_time"] is None
     assert "words" not in sent
+    assert "speaker_id" not in sent
 
 
 def test_openai_partial_delta_structure():

@@ -54,6 +54,32 @@ def test_diarize_on_builds_cluster():
     assert sess._spk_cluster is not None
 
 
+def test_reconfigure_resets_speaker_options_between_rounds():
+    import app.config as cfg
+
+    sess = _make_session(speaker=MagicMock(), speaker_service=MagicMock())
+    sess.configure({
+        "diarize": False,
+        "identify_speakers": True,
+        "speaker_threshold": 0.6,
+        "speaker_min_seg_ms": 800,
+        "speaker_max": 5,
+        "speaker_id_threshold": 0.5,
+        "speaker_id_margin": 0.2,
+    })
+
+    sess.configure({})
+
+    assert sess._with_diarize is True
+    assert sess._identify is False
+    assert sess._spk_threshold == cfg.SPEAKER_THRESHOLD
+    assert sess._spk_min_seg_ms == cfg.SPEAKER_MIN_SEG_MS
+    assert sess._spk_max == cfg.SPEAKER_MAX
+    assert sess._spk_id_threshold == cfg.SPEAKER_ID_THRESHOLD
+    assert sess._spk_id_margin == cfg.SPEAKER_ID_MARGIN
+    assert sess._spk_cluster is not None
+
+
 # ─── 范围钳制：越界报错 ───
 
 @pytest.mark.parametrize("msg", [

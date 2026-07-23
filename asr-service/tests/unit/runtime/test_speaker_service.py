@@ -31,7 +31,7 @@ class FakeEngine:
         self.vec_idx = vec_idx
         self.split_at = split_at
 
-    def embed_windows(self, wav, windows):
+    def embed_windows(self, wav, windows, *, cancelled=None):
         out = []
         for st, _ in windows:
             i = self.vec_idx + (1 if self.split_at is not None and st >= self.split_at else 0)
@@ -219,3 +219,24 @@ def test_auto_enroll_failure_falls_back_anonymous(env, store):
     store.close()                                        # alloc/enroll 将失败
     out = svc.map_and_enroll_clusters([_cluster("A", unit(0), 12.0)])
     assert out[0]["speaker_id"] is None                  # 退回匿名，不抛错
+
+
+def test_auto_enroll_stops_when_cancelled_after_identify(env, store, monkeypatch):
+    svc = make_service(store)
+    cancelled = False
+    identify = store.identify
+
+    def identify_then_cancel(*args, **kwargs):
+        nonlocal cancelled
+        result = identify(*args, **kwargs)
+        cancelled = True
+        return result
+
+    monkeypatch.setattr(store, "identify", identify_then_cancel)
+    out = svc.map_and_enroll_clusters(
+        [_cluster("A", unit(0), 12.0)],
+        cancelled=lambda: cancelled,
+    )
+
+    assert out == []
+    assert store.speaker_count == 0
