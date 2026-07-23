@@ -700,11 +700,13 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         sys.exit(1)
 
     # 说话人分离引擎（Phase 2，可选，非 funasr：CAM++ + scipy/sklearn 聚类）：加载失败
-    # 降级关闭，不影响转写/实时主链路（容错对齐 standard）。
+    # 降级关闭，不影响转写/实时主链路（容错对齐 standard）。独立门控让离线 CAM++
+    # 在 batch 边界为实时 final 让路，不与 GPU ASR 门控互相阻塞。
     speaker_engine = None
     if cfg.ENABLE_SPEAKER:
         from app.engines.speaker_embedding_engine import SpeakerEmbeddingEngine
-        speaker_engine = SpeakerEmbeddingEngine()
+        speaker_priority_gate = RealtimePriorityGate(enabled=True)
+        speaker_engine = SpeakerEmbeddingEngine(priority_gate=speaker_priority_gate)
         try:
             speaker_engine.load()
         except Exception as e:

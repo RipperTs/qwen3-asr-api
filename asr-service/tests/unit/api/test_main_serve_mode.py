@@ -940,10 +940,14 @@ def test_speaker_db_degrades_on_store_failure(isolated_create_app, monkeypatch, 
 def test_vllm_mode_speaker_enabled(isolated_create_app, monkeypatch):
     """vllm + --enable-speaker：离线与实时说话人能力同时装配。"""
     import app.main as main
+    from app.runtime.realtime_priority import RealtimePriorityGate
+
     _mock_vllm_engine(monkeypatch)
+    captured = {}
 
     class FakeSpeaker:
-        def __init__(self, *a, **k): pass
+        def __init__(self, *a, **k):
+            captured["priority_gate"] = k.get("priority_gate")
         def load(self): pass
 
     monkeypatch.setattr(
@@ -959,6 +963,7 @@ def test_vllm_mode_speaker_enabled(isolated_create_app, monkeypatch):
     assert caps["defaults"]["speaker_threshold"] == 0.5
     assert caps["defaults"]["speaker_min_seg_ms"] == 1500
     assert client.get("/v2/health").json()["speaker_enabled"] is True
+    assert isinstance(captured["priority_gate"], RealtimePriorityGate)
 
     with client.websocket_connect("/v2/asr/stream") as ws:
         created = ws.receive_json()

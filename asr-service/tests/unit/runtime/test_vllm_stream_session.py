@@ -110,6 +110,7 @@ class _FakeSpeakerEngine:
     def __init__(self, vec_indices=None):
         self.vec_indices = list(vec_indices or [])
         self.calls = 0
+        self.realtime_calls = 0
         self.audio_sizes = []
 
     def embed_segment(self, audio):
@@ -120,9 +121,13 @@ class _FakeSpeakerEngine:
         embedding[idx] = 1.0
         return embedding
 
+    def embed_realtime_segment(self, audio):
+        self.realtime_calls += 1
+        return self.embed_segment(audio)
+
 
 class _BoomSpeakerEngine:
-    def embed_segment(self, audio):
+    def embed_realtime_segment(self, audio):
         raise RuntimeError("speaker boom")
 
 
@@ -614,6 +619,7 @@ def test_speaker_audio_trims_endpoint_tail_silence():
     try:
         asyncio.run(_feed_sentence(sess, voice_ms=2000, silence_ms=800))
         assert speaker.audio_sizes == [2 * SR]
+        assert speaker.realtime_calls == 1
     finally:
         backend.shutdown()
 

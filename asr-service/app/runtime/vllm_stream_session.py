@@ -81,7 +81,7 @@ def _embed_speaker_segment(speaker, audio: _SegmentAudioBuffer):
     wav = audio.to_array()
     if wav.size == 0:
         return None
-    embedding = speaker.embed_segment(wav)
+    embedding = speaker.embed_realtime_segment(wav)
     duration_ms = int(wav.size * 1000 / _TARGET_SR)
     return embedding, duration_ms
 

@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import logging
 import os
 import threading
@@ -47,11 +48,13 @@ class SpeakerEmbeddingEngine:
     SAMPLE_RATE = 16000
     _BATCH = 64
 
-    def __init__(self):
+    def __init__(self, *, priority_gate=None):
         self._model_key = "campplus"
         self._model = None
-        # 共享实例跨会话/跨任务调用，forward 串行化（ms 级，无瓶颈）
+        # 共享实例跨会话/跨任务调用，模型 forward 必须串行。
         self._infer_lock = threading.Lock()
+        # vLLM 模式注入独立门控：实时段优先，离线在 batch 边界让路。
+        self._priority_gate = priority_gate
 
     def load(self):
         local_dir = MODEL_LOCAL_MAP[self._model_key]
@@ -88,9 +91,9 @@ class SpeakerEmbeddingEngine:
         n = -(-target_len // x.shape[0])
         return torch.cat([x] * n)[:target_len]
 
-    def embed_windows(self, wav: np.ndarray,
-                      windows: list[tuple[float, float]]) -> np.ndarray:
-        """按窗口（秒）批量提取。短窗循环补齐至批内最长。返回 L2 归一化 [N,192]。
+    def _embed_windows(self, wav: np.ndarray, windows: list[tuple[float, float]],
+                       *, realtime: bool) -> np.ndarray:
+        """按窗口批量提取；有优先门控时，离线在每个 batch 前为实时任务让路。
 
         wav 须为 16k 单声道 float32（实时侧 final 段、离线侧 soundfile 读出均天然满足）。
         """
@@ -99,30 +102,67 @@ class SpeakerEmbeddingEngine:
         if not windows:
             return np.zeros((0, self.EMB_DIM), dtype=np.float32)
 
-        sr = self.SAMPLE_RATE
-        clips = []
-        for st, ed in windows:
-            clip = wav[max(int(st * sr), 0):int(ed * sr)]
-            if len(clip) == 0:
-                # 防御：窗落在音频界外（理论不应发生），以零样本占位保持与窗表对齐
-                clip = np.zeros(1, dtype=np.float32)
-            clips.append(torch.from_numpy(np.ascontiguousarray(clip)).float())
-        # fbank 帧长 25ms（400 样本），批内最长不足时垫底防极端短输入
-        max_len = max(max(c.shape[0] for c in clips), 400)
-        feats = torch.stack([self._fbank(self._circle_pad(c, max_len)) for c in clips])
+        gate = self._priority_gate
+        section = gate.realtime_section() if realtime and gate is not None else nullcontext()
+        with section:
+            sr = self.SAMPLE_RATE
+            clips = []
+            for st, ed in windows:
+                clip = wav[max(int(st * sr), 0):int(ed * sr)]
+                if len(clip) == 0:
+                    # 防御：窗落在音频界外（理论不应发生），以零样本占位保持与窗表对齐
+                    clip = np.zeros(1, dtype=np.float32)
+                clips.append(torch.from_numpy(np.ascontiguousarray(clip)).float())
+            # fbank 帧长 25ms（400 样本），全调用统一补齐长度，保持既有 embedding 语义。
+            max_len = max(max(c.shape[0] for c in clips), 400)
 
-        outs = []
-        with self._infer_lock, torch.no_grad():
-            for i in range(0, len(feats), self._BATCH):
-                outs.append(self._model(feats[i:i + self._BATCH]))
+            if gate is None:
+                feats = torch.stack([
+                    self._fbank(self._circle_pad(c, max_len)) for c in clips
+                ])
+                outs = []
+                with self._infer_lock, torch.no_grad():
+                    for i in range(0, len(feats), self._BATCH):
+                        outs.append(self._model(feats[i:i + self._BATCH]))
+            else:
+                # 特征和 forward 都按 batch 推进；离线不会再跨全部窗口长期占用模型锁。
+                outs = []
+                with torch.no_grad():
+                    for i in range(0, len(clips), self._BATCH):
+                        if not realtime:
+                            gate.wait_realtime_clear()
+                        batch = clips[i:i + self._BATCH]
+                        feats = torch.stack([
+                            self._fbank(self._circle_pad(c, max_len)) for c in batch
+                        ])
+                        if not realtime:
+                            gate.wait_realtime_clear()
+                        with self._infer_lock:
+                            outs.append(self._model(feats))
         return F.normalize(torch.cat(outs), dim=1).numpy()
 
-    def embed_segment(self, wav: np.ndarray) -> np.ndarray:
-        """整段提取：滑窗 embedding 均值 + 重归一化（实时侧 final 段用）。返回 [192]。"""
-        embs = self.embed_windows(wav, make_windows(0.0, len(wav) / self.SAMPLE_RATE))
+    def embed_windows(self, wav: np.ndarray,
+                      windows: list[tuple[float, float]]) -> np.ndarray:
+        """按窗口（秒）批量提取。短窗循环补齐至调用内最长。返回 L2 归一化 [N,192]。"""
+        return self._embed_windows(wav, windows, realtime=False)
+
+    def _embed_segment(self, wav: np.ndarray, *, realtime: bool) -> np.ndarray:
+        embs = self._embed_windows(
+            wav,
+            make_windows(0.0, len(wav) / self.SAMPLE_RATE),
+            realtime=realtime,
+        )
         mean = embs.mean(axis=0)
         norm = float(np.linalg.norm(mean))
         return mean / norm if norm > 0 else mean
+
+    def embed_segment(self, wav: np.ndarray) -> np.ndarray:
+        """整段提取：滑窗 embedding 均值 + 重归一化。返回 [192]。"""
+        return self._embed_segment(wav, realtime=False)
+
+    def embed_realtime_segment(self, wav: np.ndarray) -> np.ndarray:
+        """实时整段提取；有优先门控时，阻止离线任务继续抢占后续 batch。"""
+        return self._embed_segment(wav, realtime=True)
 
     def unload(self):
         self._model = None
