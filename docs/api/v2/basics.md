@@ -141,7 +141,7 @@ GET /v2/capabilities
 | 字段 | 说明 |
 |------|------|
 | speaker_labels | 说话人分离是否启用（离线 + 实时同一开关） |
-| speaker_identification | 声纹库真名识别是否可用（登记 / identify / 转写联动） |
+| speaker_identification | 声纹库真名识别是否可用（登记 / 认领 / identify / 转写联动） |
 | stream.enabled | 实时端点是否已挂载；standard 需 `--enable-stream`，vllm 恒为 true |
 | stream.backend | `vad-offline` / `vllm-native` |
 | stream.partial_results | 是否产生中间结果 `partial`（vad-offline 后端为 false） |

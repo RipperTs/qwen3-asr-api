@@ -5,6 +5,7 @@ map_clusters 异常兜底、自动登记分支全集（过门槛/时长不足/�
 临时文件清理、留存音频。阈值只测逻辑分支（V0 标定铁律）。
 """
 import os
+import threading
 import types
 
 import numpy as np
@@ -12,7 +13,7 @@ import pytest
 
 import app.config as cfg
 from app.runtime.speaker_service import SpeakerService
-from app.runtime.speaker_store import SpeakerStore
+from app.runtime.speaker_store import SpeakerClaimConflictError, SpeakerStore
 
 DIM = 192
 TAG = "campplus_cn_common@v1"
@@ -133,6 +134,175 @@ def test_store_audio_kept_and_removed_on_delete(env, store, monkeypatch):
     assert not os.path.isdir(audio_dir)                  # 被遗忘权：音频同步清理
 
 
+# ─── claim ───
+
+def test_claim_auto_speaker_replaces_templates(env, store):
+    sid = store.enroll_speaker(
+        "说话人_01",
+        None,
+        [unit(5)],
+        [12.0],
+        consent=True,
+        source="auto",
+    )
+    svc = make_service(store)
+
+    response = svc.claim(
+        sid,
+        " 张三 ",
+        "产品部",
+        [_src(env, "claim.mp3")],
+        True,
+        " profile-1 ",
+    )
+
+    assert response["speaker_id"] == sid
+    assert response["source"] == "manual"
+    assert response["templates"] == 1
+    assert len(response["template_ids"]) == 1
+    assert response["quality_hint"]
+    info = store.get_speaker(sid)
+    assert info["name"] == "张三" and info["note"] == "产品部"
+    assert info["source"] == "manual"
+    assert store.identify(unit(0))["speaker_id"] == sid
+
+
+def test_claim_replay_skips_audio_processing(env, store, monkeypatch):
+    sid = store.enroll_speaker(
+        "说话人_01", None, [unit(5)], [12.0], True, source="auto"
+    )
+    svc = make_service(store)
+    first = svc.claim(
+        sid, "张三", None, [_src(env)], True, "profile-1"
+    )
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("幂等重试不应重新处理音频")
+
+    monkeypatch.setattr(svc, "_embed_file", fail_if_called)
+    replay = svc.claim(
+        sid, "其他名称", "其他备注", [_src(env, "retry.mp3")],
+        True, "profile-1",
+    )
+    assert replay == first
+
+
+def test_claim_manual_conflict_happens_before_audio_processing(
+    env, store, monkeypatch
+):
+    sid = store.enroll_speaker(
+        "张三", None, [unit(0)], [5.0], consent=True
+    )
+    svc = make_service(store)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("手动声纹冲突不应处理音频")
+
+    monkeypatch.setattr(svc, "_embed_file", fail_if_called)
+    with pytest.raises(SpeakerClaimConflictError) as exc:
+        svc.claim(
+            sid, "李四", None, [_src(env)], True, "profile-1"
+        )
+    assert exc.value.code == "speaker_not_claimable"
+
+
+def test_claim_validates_consent_name_and_claim_key(env, store):
+    sid = store.enroll_speaker(
+        "说话人_01", None, [unit(5)], [12.0], True, source="auto"
+    )
+    svc = make_service(store)
+    path = _src(env)
+
+    with pytest.raises(ValueError, match="consent"):
+        svc.claim(sid, "张三", None, [path], False, "profile-1")
+    with pytest.raises(ValueError, match="名称"):
+        svc.claim(sid, " ", None, [path], True, "profile-1")
+    with pytest.raises(ValueError, match="claim_key"):
+        svc.claim(sid, "张三", None, [path], True, " ")
+
+
+def test_claim_replaces_retained_audio(env, store, monkeypatch):
+    monkeypatch.setattr(cfg, "SPEAKER_STORE_AUDIO", True)
+    sid = store.enroll_speaker(
+        "说话人_01", None, [unit(5)], [12.0], True, source="auto"
+    )
+    audio_dir = os.path.join(str(env), "data", "speaker_audio", sid)
+    os.makedirs(audio_dir, exist_ok=True)
+    with open(os.path.join(audio_dir, "old.wav"), "wb") as file:
+        file.write(b"old")
+
+    response = make_service(store).claim(
+        sid,
+        "张三",
+        None,
+        [_src(env, "a.mp3"), _src(env, "b.mp3")],
+        True,
+        "profile-1",
+    )
+
+    expected = {f"{template_id}.wav" for template_id in response["template_ids"]}
+    assert set(os.listdir(audio_dir)) == expected
+
+
+def test_claim_and_delete_serialize_retained_audio(
+    env, store, monkeypatch
+):
+    monkeypatch.setattr(cfg, "SPEAKER_STORE_AUDIO", True)
+    sid = store.enroll_speaker(
+        "说话人_01", None, [unit(5)], [12.0], True, source="auto"
+    )
+    svc = make_service(store)
+    audio_dir = os.path.join(str(env), "data", "speaker_audio", sid)
+    replace_started = threading.Event()
+    allow_replace = threading.Event()
+    delete_started = threading.Event()
+    delete_finished = threading.Event()
+    errors = []
+    original_replace = svc._replace_retained_audio
+
+    def blocking_replace(*args):
+        replace_started.set()
+        if not allow_replace.wait(timeout=2):
+            raise AssertionError("测试未放行留存音频替换")
+        original_replace(*args)
+
+    def run_claim():
+        try:
+            svc.claim(
+                sid, "张三", None, [_src(env)], True, "profile-1"
+            )
+        except Exception as exc:  # pragma: no cover - 失败由主线程断言
+            errors.append(exc)
+
+    def run_delete():
+        delete_started.set()
+        try:
+            svc.delete_speaker(sid)
+        except Exception as exc:  # pragma: no cover - 失败由主线程断言
+            errors.append(exc)
+        finally:
+            delete_finished.set()
+
+    monkeypatch.setattr(svc, "_replace_retained_audio", blocking_replace)
+    claim_thread = threading.Thread(target=run_claim)
+    delete_thread = threading.Thread(target=run_delete)
+    claim_thread.start()
+    assert replace_started.wait(timeout=2)
+    delete_thread.start()
+    assert delete_started.wait(timeout=2)
+    try:
+        assert not delete_finished.wait(timeout=0.1)
+    finally:
+        allow_replace.set()
+        claim_thread.join(timeout=2)
+        delete_thread.join(timeout=2)
+
+    assert not claim_thread.is_alive() and not delete_thread.is_alive()
+    assert errors == []
+    assert store.get_speaker(sid) is None
+    assert not os.path.isdir(audio_dir)
+
+
 # ─── identify_file ───
 
 def test_identify_file_hit_and_miss(env, store):
@@ -140,9 +310,20 @@ def test_identify_file_hit_and_miss(env, store):
     sid = svc.enroll("张三", None, [_src(env)], consent=True)["speaker_id"]
     hit = svc.identify_file(_src(env, "q.mp3"))
     assert hit["matched"] is True and hit["speaker_id"] == sid and hit["name"] == "张三"
+    assert hit["source"] == "manual"
 
     svc_other = make_service(store, engine=FakeEngine(vec_idx=5))
     assert svc_other.identify_file(_src(env, "q2.mp3")) == {"matched": False}
+
+
+def test_identify_file_returns_auto_source(env, store):
+    sid = store.enroll_speaker(
+        "说话人_01", None, [unit(0)], [12.0], True, source="auto"
+    )
+    hit = make_service(store).identify_file(_src(env))
+    assert hit["speaker_id"] == sid
+    assert hit["name"] == "说话人_01"
+    assert hit["source"] == "auto"
 
 
 # ─── map_clusters（实时联动：仅识别）───

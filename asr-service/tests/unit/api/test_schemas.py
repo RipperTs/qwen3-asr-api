@@ -167,3 +167,25 @@ def test_final_msg_speaker_field():
     assert m.speaker is None
     assert "speaker" in FinalMsg(seg_id=0, text="你好", speaker="A").model_dump()
     assert FinalMsg(seg_id=0, text="你好", speaker="A").speaker == "A"
+
+
+def test_identify_response_source():
+    response = schemas.IdentifyResponse(
+        matched=True,
+        speaker_id="a" * 32,
+        name="张三",
+        source="auto",
+        score=0.8,
+    )
+    assert response.source == "auto"
+
+
+def test_speaker_claim_response():
+    response = schemas.SpeakerClaimResponse(
+        speaker_id="a" * 32,
+        name="张三",
+        templates=2,
+        template_ids=[11, 12],
+    )
+    assert response.source == "manual"
+    assert response.template_ids == [11, 12]

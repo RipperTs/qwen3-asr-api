@@ -9,6 +9,7 @@ How speaker diarization (anonymous labels) and voiceprint identification (real n
 - [Speaker Diarization & Voiceprint Identification](#speaker-diarization--voiceprint-identification)
 - [Voiceprint Database Endpoints `/v2/speakers*`](#voiceprint-database-endpoints)
   - [Enroll a Speaker](#enroll-a-speaker)
+  - [Claim an Auto-enrolled Speaker](#claim-an-auto-enrolled-speaker)
   - [List / Detail / Rename & Note / Delete](#list--detail--rename--note--delete)
   - [Template Management / Identify](#template-management--identify)
   - [Error Codes](#error-codes)
@@ -81,6 +82,47 @@ curl -X POST http://127.0.0.1:8765/v2/speakers \
 
 Response: `{"speaker_id": "9f86…", "name": "张三", "templates": 3, "quality_hint": null}`
 
+### Claim an Auto-enrolled Speaker
+
+```
+POST /v2/speakers/{id}/claim        (multipart) → 200
+```
+
+When an administrator's sample matches a `source="auto"` placeholder such as `说话人_NN`, the caller can claim that record. Claiming preserves the original `speaker_id` and, in one database transaction, changes the source to `manual`, updates the name and note, and replaces all auto-generated templates with the administrator-provided samples.
+
+```bash
+curl -X POST http://127.0.0.1:8765/v2/speakers/9f86.../claim \
+  -H "Authorization: Bearer sk-your-key" \
+  -F "name=Alice" -F "consent=true" -F "note=Product" \
+  -F "claim_key=0f34c41a-1db8-4cc7-91e5-086bf4f73f86" \
+  -F "files=@sample1.wav" -F "files=@sample2.wav"
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| name | Display name after the claim (required) |
+| consent | Must be `true` |
+| note | Optional note |
+| claim_key | Caller-provided idempotency key; using the caller's voiceprint profile UUID is recommended; max 128 characters |
+| files | 1–16 single-speaker audio samples, with the same quality requirements as enrollment |
+
+The `template_ids` in a successful response follow the upload order of `files`, so callers can map samples directly:
+
+```json
+{
+  "speaker_id": "9f86d081884c7d659a2feaa0c55ad015",
+  "name": "Alice",
+  "source": "manual",
+  "templates": 2,
+  "template_ids": [12, 13],
+  "quality_hint": "建议提供 ≥3 个不同场景的样本以提升识别稳健性"
+}
+```
+
+- Retrying the same `speaker_id` and `claim_key` returns the original successful result without replacing templates again.
+- A `claim_key` already used for another speaker, or a target whose source is not `auto`, returns a structured `409`; `detail.conflict` contains the conflicting `speaker_id`, `speaker_name`, and `source`.
+- Claimability is determined only by `source`, which the ordinary rename endpoint cannot change, never by matching the placeholder name.
+
 ### List / Detail / Rename & Note / Delete
 
 ```
@@ -97,10 +139,10 @@ DELETE /v2/speakers/{id}            → hard delete (cascades templates + physic
 ```
 POST   /v2/speakers/{id}/templates          (multipart file) → 201, appends a sample and recomputes the centroid (max 16 per speaker)
 DELETE /v2/speakers/{id}/templates/{tid}    → {"remaining": N, "hint"?} (reaching 0 templates does not auto-delete the speaker; hint suggests adding samples or deleting)
-POST   /v2/speakers/identify                (multipart file) → {"matched": bool, "speaker_id"?, "name"?, "score"?}
+POST   /v2/speakers/identify                (multipart file) → {"matched": bool, "speaker_id"?, "name"?, "source"?, "score"?}
 ```
 
-Identification is a 1:N open-set decision: it returns `matched: false` when the highest similarity is below the threshold (`speaker_id_threshold`, default 0.45) or when the margin to the second-highest is too small (`speaker_id_margin`, default 0.10 — when nearest neighbors clash, prefer no answer over a wrong one).
+Identification is a 1:N open-set decision: it returns `matched: false` when the highest similarity is below the threshold (`speaker_id_threshold`, default 0.45) or when the margin to the second-highest is too small (`speaker_id_margin`, default 0.10 — when nearest neighbors clash, prefer no answer over a wrong one). On a match, `source` is `manual` or `auto`, allowing callers to choose between reporting a duplicate and invoking the claim endpoint.
 
 ### Error Codes
 
@@ -109,5 +151,6 @@ Identification is a 1:N open-set decision: it returns `matched: false` when the 
 | 400 | Quality threshold not met (insufficient duration / multiple speakers / unsupported format) / missing consent |
 | 401 | Authentication failed |
 | 404 | Speaker / template not found |
-| 503 | `speaker_db_disabled` (module not enabled / degraded) / `model_tag_mismatch` (templates in the database are inconsistent with the current engine version: enrollment and identification are disabled, **viewing and deletion remain available**) |
+| 409 | The target is not claimable (not `auto`) or the `claim_key` belongs to another speaker; the response includes a structured conflict object |
+| 503 | `speaker_db_disabled` (module not enabled / degraded) / `model_tag_mismatch` (templates in the database are inconsistent with the current engine version: enrollment, claiming, and identification are disabled, **viewing and deletion remain available**) |
 | 500 | Voiceprint database read/write failure |

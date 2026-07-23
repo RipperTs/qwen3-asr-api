@@ -9,6 +9,7 @@
 - [说话人分离与声纹识别](#说话人分离与声纹识别)
 - [声纹库接口 `/v2/speakers*`](#声纹库接口)
   - [登记说话人](#登记说话人)
+  - [认领自动登记的说话人](#认领自动登记的说话人)
   - [列表 / 详情 / 改名备注 / 删除](#列表--详情--改名备注--删除)
   - [模板管理 / 识别](#模板管理--识别)
   - [错误码](#错误码)
@@ -81,6 +82,47 @@ curl -X POST http://127.0.0.1:8765/v2/speakers \
 
 响应：`{"speaker_id": "9f86…", "name": "张三", "templates": 3, "quality_hint": null}`
 
+### 认领自动登记的说话人
+
+```
+POST /v2/speakers/{id}/claim        （multipart）→ 200
+```
+
+当管理员上传的声纹命中 `source="auto"` 的「说话人_NN」时，可认领该记录。认领会保留原 `speaker_id`，在数据库事务内将来源改为 `manual`、更新姓名和备注，并用管理员上传的样本替换全部自动模板。
+
+```bash
+curl -X POST http://127.0.0.1:8765/v2/speakers/9f86.../claim \
+  -H "Authorization: Bearer sk-your-key" \
+  -F "name=张三" -F "consent=true" -F "note=产品部" \
+  -F "claim_key=0f34c41a-1db8-4cc7-91e5-086bf4f73f86" \
+  -F "files=@sample1.wav" -F "files=@sample2.wav"
+```
+
+| 参数 | 说明 |
+|------|------|
+| name | 认领后的显示名（必填） |
+| consent | 必须为 `true` |
+| note | 备注（可选） |
+| claim_key | 调用方提供的幂等键，建议使用调用方声纹档案 UUID；最大 128 字符 |
+| files | 1–16 个单人音频样本，质量要求与登记接口一致 |
+
+成功响应中的 `template_ids` 与上传的 `files` 顺序一致，调用方可直接建立样本映射：
+
+```json
+{
+  "speaker_id": "9f86d081884c7d659a2feaa0c55ad015",
+  "name": "张三",
+  "source": "manual",
+  "templates": 2,
+  "template_ids": [12, 13],
+  "quality_hint": "建议提供 ≥3 个不同场景的样本以提升识别稳健性"
+}
+```
+
+- 相同 `claim_key` 对同一 `speaker_id` 重试时返回首次成功的原结果，不会重复替换模板。
+- `claim_key` 已用于其他说话人，或目标不是 `source="auto"` 时返回结构化 `409`；`detail.conflict` 包含冲突说话人的 `speaker_id`、`speaker_name` 和 `source`。
+- 不按「说话人_NN」名称判断是否可认领，唯一依据是不可由普通改名接口修改的 `source` 字段。
+
 ### 列表 / 详情 / 改名备注 / 删除
 
 ```
@@ -97,10 +139,10 @@ DELETE /v2/speakers/{id}            → 硬删除（级联模板 + 物理回收 
 ```
 POST   /v2/speakers/{id}/templates          （multipart file）→ 201，追加样本并重算质心（每人上限 16）
 DELETE /v2/speakers/{id}/templates/{tid}    → {"remaining": N, "hint"?}（剩 0 模板不自动删人，hint 提示补样本或删除）
-POST   /v2/speakers/identify                （multipart file）→ {"matched": bool, "speaker_id"?, "name"?, "score"?}
+POST   /v2/speakers/identify                （multipart file）→ {"matched": bool, "speaker_id"?, "name"?, "source"?, "score"?}
 ```
 
-识别为 1:N 开集判定：最高相似度低于阈值（`speaker_id_threshold`，默认 0.45）或与次高差距过小（`speaker_id_margin`，默认 0.10——近邻打架宁缺勿错）时返回 `matched: false`。
+识别为 1:N 开集判定：最高相似度低于阈值（`speaker_id_threshold`，默认 0.45）或与次高差距过小（`speaker_id_margin`，默认 0.10——近邻打架宁缺勿错）时返回 `matched: false`。命中时 `source` 为 `manual` 或 `auto`，调用方可据此决定提示重复或调用认领接口。
 
 ### 错误码
 
@@ -109,5 +151,6 @@ POST   /v2/speakers/identify                （multipart file）→ {"matched": 
 | 400 | 质量门槛不达标（时长不足/多说话人/格式不支持）/ consent 缺失 |
 | 401 | 认证失败 |
 | 404 | 说话人/模板不存在 |
-| 503 | `speaker_db_disabled`（模块未启用/已降级）/ `model_tag_mismatch`（库内模板与当前引擎版本不一致：登记与识别禁用，**查看与删除仍可用**） |
+| 409 | 目标说话人不可认领（非 `auto`）或 `claim_key` 已用于其他说话人；响应包含结构化冲突对象 |
+| 503 | `speaker_db_disabled`（模块未启用/已降级）/ `model_tag_mismatch`（库内模板与当前引擎版本不一致：登记、认领与识别禁用，**查看与删除仍可用**） |
 | 500 | 声纹库读写失败 |

@@ -1,5 +1,6 @@
-"""声纹库编排层：登记/识别业务流程（格式转换 → VAD → 质量门槛 → embedding → 入库/比对）。
+"""声纹库编排层：登记/认领/识别流程。
 
+管理路径统一执行格式转换 → VAD → 质量门槛 → embedding → 入库/比对。
 全部方法【同步】，路由层经 asyncio.to_thread 下沉调用（对齐 routes.py 体例）。
 错误约定：
 - 质量门槛/输入问题 → ValueError（中文信息，路由转 400 直接透传 detail）；
@@ -10,6 +11,7 @@
 import logging
 import os
 import shutil
+import threading
 import uuid
 
 import numpy as np
@@ -32,6 +34,8 @@ class SpeakerService:
         self.store = store
         self._engine = embed_engine
         self._vad = vad_engine
+        # 数据库变更与留存音频操作必须保持同一顺序，避免并发删除后重新落盘。
+        self._speaker_data_lock = threading.Lock()
 
     # ─── 内部：单文件 → 模板向量 ───
 
@@ -77,6 +81,58 @@ class SpeakerService:
     def _audio_dir(self, speaker_id: str) -> str:
         return os.path.join(cfg.BASE_DIR, "data", "speaker_audio", speaker_id)
 
+    @staticmethod
+    def _cleanup_wavs(paths: list[str]) -> None:
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            try:
+                os.remove(path)
+            except OSError as e:
+                logger.warning(f"声纹临时文件清理失败: {e}")
+
+    @staticmethod
+    def _quality_hint(template_count: int) -> str | None:
+        if template_count >= QUALITY_HINT_MIN_TEMPLATES:
+            return None
+        return (
+            f"建议提供 ≥{QUALITY_HINT_MIN_TEMPLATES} 个不同场景的样本以提升识别稳健性"
+        )
+
+    @classmethod
+    def _with_quality_hint(cls, result: dict) -> dict:
+        response = dict(result)
+        if "quality_hint" not in response:
+            quality_hint = cls._quality_hint(response["templates"])
+            if quality_hint is not None:
+                response["quality_hint"] = quality_hint
+        return response
+
+    def _replace_retained_audio(
+        self,
+        speaker_id: str,
+        kept_wavs: list[str],
+        template_ids: list[int],
+    ) -> None:
+        """模板已原子替换后同步留存音频；失败仅记录，不反转已提交的认领。"""
+        audio_dir = self._audio_dir(speaker_id)
+        try:
+            if os.path.isdir(audio_dir):
+                shutil.rmtree(audio_dir)
+            if kept_wavs:
+                os.makedirs(audio_dir, exist_ok=True)
+                for template_id, wav_path in zip(
+                    template_ids, kept_wavs, strict=True
+                ):
+                    shutil.move(
+                        wav_path,
+                        os.path.join(audio_dir, f"{template_id}.wav"),
+                    )
+        except (OSError, ValueError) as e:
+            logger.error(f"说话人已认领，但留存音频替换失败: {e}")
+        finally:
+            self._cleanup_wavs(kept_wavs)
+
     # ─── 管理路径（路由经 to_thread 调用）───
 
     def enroll(self, name: str, note: str | None, file_paths: list[str],
@@ -98,54 +154,130 @@ class SpeakerService:
                 durs.append(dur)
                 if kept:
                     kept_wavs.append(kept)
-            speaker_id = self.store.enroll_speaker(
-                name, note, vectors, durs, consent=True, source="manual")
+            with self._speaker_data_lock:
+                speaker_id = self.store.enroll_speaker(
+                    name, note, vectors, durs, consent=True, source="manual")
+                if kept_wavs:
+                    audio_dir = self._audio_dir(speaker_id)
+                    os.makedirs(audio_dir, exist_ok=True)
+                    for i, wav_path in enumerate(kept_wavs):
+                        shutil.move(
+                            wav_path,
+                            os.path.join(audio_dir, f"{i:02d}.wav"),
+                        )
         except Exception:
-            for w in kept_wavs:
-                if os.path.exists(w):
-                    os.remove(w)
+            self._cleanup_wavs(kept_wavs)
             raise
-        if kept_wavs:
-            audio_dir = self._audio_dir(speaker_id)
-            os.makedirs(audio_dir, exist_ok=True)
-            for i, w in enumerate(kept_wavs):
-                shutil.move(w, os.path.join(audio_dir, f"{i:02d}.wav"))
         resp = {"speaker_id": speaker_id, "name": name, "templates": len(vectors)}
-        if len(vectors) < QUALITY_HINT_MIN_TEMPLATES:
-            resp["quality_hint"] = (
-                f"建议提供 ≥{QUALITY_HINT_MIN_TEMPLATES} 个不同场景的样本以提升识别稳健性"
+        return self._with_quality_hint(resp)
+
+    def claim(
+        self,
+        speaker_id: str,
+        name: str,
+        note: str | None,
+        file_paths: list[str],
+        consent: bool,
+        claim_key: str,
+    ) -> dict:
+        """认领自动登记说话人，保留 speaker_id 并用管理员样本替换模板。"""
+        if consent is not True:
+            raise ValueError("认领必须携带 consent=true（确认已获得数据主体同意）")
+        name = name.strip()
+        if not name:
+            raise ValueError("说话人名称不能为空")
+        claim_key = claim_key.strip()
+        if not claim_key:
+            raise ValueError("claim_key 不能为空")
+        if len(claim_key) > SpeakerStore.MAX_CLAIM_KEY_LENGTH:
+            raise ValueError(
+                f"claim_key 长度不能超过 "
+                f"{SpeakerStore.MAX_CLAIM_KEY_LENGTH} 个字符"
             )
-        return resp
+        if not file_paths:
+            raise ValueError("至少需要 1 个音频样本")
+        if len(file_paths) > SpeakerStore.MAX_TEMPLATES:
+            raise ValueError(f"样本数超过模板上限 {SpeakerStore.MAX_TEMPLATES}")
+
+        replay = self.store.resolve_claim(speaker_id, claim_key)
+        if replay is not None:
+            return self._with_quality_hint(replay)
+
+        keep = cfg.SPEAKER_STORE_AUDIO
+        vectors, durs, kept_wavs = [], [], []
+        try:
+            for file_path in file_paths:
+                vector, dur, kept = self._embed_file(
+                    file_path,
+                    keep_wav=keep,
+                    purpose="认领",
+                )
+                vectors.append(vector)
+                durs.append(dur)
+                if kept:
+                    kept_wavs.append(kept)
+            with self._speaker_data_lock:
+                result, created = self.store.claim_auto_speaker(
+                    speaker_id,
+                    name,
+                    note,
+                    vectors,
+                    durs,
+                    claim_key,
+                    self._quality_hint(len(vectors)),
+                )
+                if created:
+                    self._replace_retained_audio(
+                        speaker_id,
+                        kept_wavs,
+                        result["template_ids"],
+                    )
+        except Exception:
+            self._cleanup_wavs(kept_wavs)
+            raise
+
+        if not created:
+            self._cleanup_wavs(kept_wavs)
+        return self._with_quality_hint(result)
 
     def add_template(self, speaker_id: str, file_path: str) -> dict:
         """为既有说话人追加模板（质心自动重算）。"""
         vec, dur, kept = self._embed_file(file_path, keep_wav=cfg.SPEAKER_STORE_AUDIO,
                                           purpose="追加")
         try:
-            self.store.add_template(speaker_id, vec, dur)
+            with self._speaker_data_lock:
+                self.store.add_template(speaker_id, vec, dur)
+                if kept:
+                    audio_dir = self._audio_dir(speaker_id)
+                    os.makedirs(audio_dir, exist_ok=True)
+                    shutil.move(
+                        kept,
+                        os.path.join(
+                            audio_dir,
+                            f"t_{uuid.uuid4().hex[:8]}.wav",
+                        ),
+                    )
         except Exception:
             if kept and os.path.exists(kept):
                 os.remove(kept)
             raise
-        if kept:
-            audio_dir = self._audio_dir(speaker_id)
-            os.makedirs(audio_dir, exist_ok=True)
-            shutil.move(kept, os.path.join(audio_dir, f"t_{uuid.uuid4().hex[:8]}.wav"))
         info = self.store.get_speaker(speaker_id)
         return {"speaker_id": speaker_id, "templates": len(info["templates"]) if info else 0}
 
     def delete_speaker(self, speaker_id: str) -> None:
         """硬删除（库 + 留存音频目录同步清理——被遗忘权完整覆盖）。"""
-        self.store.delete_speaker(speaker_id)
-        audio_dir = self._audio_dir(speaker_id)
-        if os.path.isdir(audio_dir):
-            shutil.rmtree(audio_dir, ignore_errors=True)
+        with self._speaker_data_lock:
+            self.store.delete_speaker(speaker_id)
+            audio_dir = self._audio_dir(speaker_id)
+            if os.path.isdir(audio_dir):
+                shutil.rmtree(audio_dir, ignore_errors=True)
 
     def identify_file(self, file_path: str) -> dict:
         """单文件 1:N 识别。"""
         vec, dur, _ = self._embed_file(file_path, keep_wav=False, purpose="识别")
         hit = self.store.identify(vec, threshold=cfg.SPEAKER_ID_THRESHOLD,
-                                  margin=cfg.SPEAKER_ID_MARGIN)
+                                  margin=cfg.SPEAKER_ID_MARGIN,
+                                  include_source=True)
         self.store.audit("identify", hit["speaker_id"] if hit else None,
                          {"matched": hit is not None,
                           "score": hit["score"] if hit else None, "via": "file"})

@@ -6,18 +6,19 @@
   （TaskStore 是旁路自吞）；唯一例外是 audit——审计是旁路，失败仅 WARN。
 - 永不自动清理：无 TTL、无启动清理（声纹是长期积累资产），唯一删除途径 =
   delete_speaker（被遗忘权，物理回收）。
+- 自动说话人认领：元数据更新、模板替换和 claim_key 幂等结果同事务提交，
+  保留原 speaker_id；仅 source=auto 可执行。
 
 检索模型：启动/写后全量重载内存质心矩阵 [N,192]，identify 为纯 numpy 点积
 （千人级 <1ms）；重载构造完成后一次性替换引用，读侧无锁也无撕裂读。
 """
+import json
 import logging
 import os
 import sqlite3
 import threading
 import uuid
 from datetime import datetime
-
-import json
 
 import numpy as np
 
@@ -47,6 +48,14 @@ CREATE TABLE IF NOT EXISTS templates (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_templates_speaker ON templates(speaker_id);
+CREATE TABLE IF NOT EXISTS speaker_claims (
+  claim_key  TEXT PRIMARY KEY,
+  speaker_id TEXT NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
+  response   TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_speaker_claims_speaker
+  ON speaker_claims(speaker_id);
 CREATE TABLE IF NOT EXISTS audit_log (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   ts         TEXT NOT NULL,
@@ -65,10 +74,23 @@ class SpeakerNotFoundError(SpeakerStoreError):
     """目标说话人/模板不存在——路由层映射 404（其余 SpeakerStoreError 一律 500）。"""
 
 
+class SpeakerClaimConflictError(SpeakerStoreError):
+    """认领目标或幂等键冲突——路由层映射为带冲突对象的 409。"""
+
+    def __init__(self, code: str, message: str, *, speaker_id: str,
+                 speaker_name: str, source: str):
+        super().__init__(message)
+        self.code = code
+        self.speaker_id = speaker_id
+        self.speaker_name = speaker_name
+        self.source = source
+
+
 class SpeakerStore:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
     DIM = 192
     MAX_TEMPLATES = 16          # 每人模板上限（防滥用）
+    MAX_CLAIM_KEY_LENGTH = 128
     _NORM_TOL = 1e-3            # L2 归一容差（入库向量须由引擎出口归一）
 
     def __init__(self, db_path: str, model_tag: str):
@@ -76,10 +98,12 @@ class SpeakerStore:
         self.model_tag = model_tag
         self._lock = threading.Lock()
         self._cache_version = 0
-        # identify 读侧无锁：(matrix, ids, names) 装入单引用整体交换——
-        # 三属性分写在字节码间隙可被读侧观察到撕裂（GIL 不保证多字节码序列原子）
-        self._cache: tuple[np.ndarray, list[str], list[str]] = (
-            np.zeros((0, self.DIM), dtype=np.float32), [], [])
+        self._cache_dirty = True
+        # identify 读侧无锁：(matrix, ids, names, sources) 装入单引用整体交换——
+        # 多属性分写在字节码间隙可被读侧观察到撕裂（GIL 不保证多字节码序列原子）
+        self._cache: tuple[
+            np.ndarray, list[str], list[str], list[str]
+        ] = (np.zeros((0, self.DIM), dtype=np.float32), [], [], [])
 
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         try:
@@ -90,10 +114,28 @@ class SpeakerStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")   # 级联删除依赖
             self._conn.executescript(_DDL)
-            self._conn.execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
-                (str(self.SCHEMA_VERSION),),
-            )
+            schema_row = self._conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()
+            if schema_row is None:
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('schema_version', ?)",
+                    (str(self.SCHEMA_VERSION),),
+                )
+            else:
+                try:
+                    schema_version = int(schema_row["value"])
+                except (TypeError, ValueError) as e:
+                    raise SpeakerStoreError("声纹库 schema_version 无效") from e
+                if schema_version > self.SCHEMA_VERSION:
+                    raise SpeakerStoreError(
+                        f"声纹库版本过新: {schema_version} > {self.SCHEMA_VERSION}"
+                    )
+                if schema_version < self.SCHEMA_VERSION:
+                    self._conn.execute(
+                        "UPDATE meta SET value=? WHERE key='schema_version'",
+                        (str(self.SCHEMA_VERSION),),
+                    )
             self._conn.execute(
                 "INSERT OR IGNORE INTO meta(key, value) VALUES('model_tag', ?)",
                 (model_tag,),
@@ -127,27 +169,37 @@ class SpeakerStore:
 
     def _reload_cache(self):
         """重建内存质心矩阵。须持锁调用；构造完成后整体替换引用（读侧无撕裂）。"""
+        self._cache_dirty = True
         try:
-            rows = self._conn.execute("SELECT id, name, centroid FROM speakers").fetchall()
+            rows = self._conn.execute(
+                "SELECT id, name, source, centroid FROM speakers"
+            ).fetchall()
         except sqlite3.Error as e:
             raise SpeakerStoreError(f"质心缓存重载失败: {e}") from e
-        ids, names, vecs = [], [], []
+        ids, names, sources, vecs = [], [], [], []
         for r in rows:
             ids.append(r["id"])
             names.append(r["name"])
+            sources.append(r["source"])
             vecs.append(np.frombuffer(r["centroid"], dtype=np.float32))
         matrix = (np.stack(vecs) if vecs
                   else np.zeros((0, self.DIM), dtype=np.float32))
-        self._cache = (matrix, ids, names)
+        self._cache = (matrix, ids, names, sources)
         self._cache_version += 1
+        self._cache_dirty = False
 
     def _evict_from_cache(self, speaker_id: str):
         """按 id 摘除内存缓存单项（delete_speaker 重载失败时的兜底）。须持锁调用。"""
-        matrix, ids, names = self._cache
+        matrix, ids, names, sources = self._cache
         if speaker_id not in ids:
             return
         keep = [i for i, x in enumerate(ids) if x != speaker_id]
-        self._cache = (matrix[keep], [ids[i] for i in keep], [names[i] for i in keep])
+        self._cache = (
+            matrix[keep],
+            [ids[i] for i in keep],
+            [names[i] for i in keep],
+            [sources[i] for i in keep],
+        )
         self._cache_version += 1
 
     def _recompute_centroid(self, speaker_id: str):
@@ -166,6 +218,51 @@ class SpeakerStore:
             "UPDATE speakers SET centroid=?, updated_at=? WHERE id=?",
             (centroid.astype(np.float32).tobytes(), self._now(), speaker_id),
         )
+
+    def _claim_replay_locked(self, speaker_id: str,
+                             claim_key: str) -> dict | None:
+        """读取幂等认领结果并校验 key 归属。须持锁调用。"""
+        row = self._conn.execute(
+            "SELECT c.speaker_id, c.response, s.name, s.source"
+            " FROM speaker_claims c JOIN speakers s ON s.id = c.speaker_id"
+            " WHERE c.claim_key=?",
+            (claim_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["speaker_id"] != speaker_id:
+            raise SpeakerClaimConflictError(
+                "claim_key_conflict",
+                "claim_key 已用于其他说话人",
+                speaker_id=row["speaker_id"],
+                speaker_name=row["name"],
+                source=row["source"],
+            )
+        try:
+            response = json.loads(row["response"])
+        except (TypeError, json.JSONDecodeError) as e:
+            raise SpeakerStoreError(f"认领幂等记录损坏: {e}") from e
+        if not isinstance(response, dict):
+            raise SpeakerStoreError("认领幂等记录格式错误")
+        return response
+
+    def _require_auto_speaker_locked(self, speaker_id: str) -> sqlite3.Row:
+        """读取并校验认领目标。须持锁调用，写事务内会再次执行。"""
+        row = self._conn.execute(
+            "SELECT id, name, source FROM speakers WHERE id=?",
+            (speaker_id,),
+        ).fetchone()
+        if row is None:
+            raise SpeakerNotFoundError(f"说话人不存在: {speaker_id}")
+        if row["source"] != "auto":
+            raise SpeakerClaimConflictError(
+                "speaker_not_claimable",
+                "仅自动登记的说话人可以被认领",
+                speaker_id=row["id"],
+                speaker_name=row["name"],
+                source=row["source"],
+            )
+        return row
 
     # ─── 写路径（失败一律 raise SpeakerStoreError）───
 
@@ -208,6 +305,121 @@ class SpeakerStore:
         self.audit("enroll" if source == "manual" else "auto_enroll",
                    speaker_id, {"name": name, "templates": len(validated)})
         return speaker_id
+
+    def resolve_claim(self, speaker_id: str, claim_key: str) -> dict | None:
+        """返回同 key 的原认领结果；首次认领则只校验目标当前可认领。
+
+        该检查用于在音频预处理前快速返回重试或冲突。真正写入时仍会在同一
+        事务内重查，避免并发认领的 TOCTOU。
+        """
+        if not claim_key or len(claim_key) > self.MAX_CLAIM_KEY_LENGTH:
+            raise SpeakerStoreError("claim_key 无效")
+        with self._lock:
+            try:
+                replay = self._claim_replay_locked(speaker_id, claim_key)
+                if replay is not None:
+                    # 首次请求可能已提交但缓存重载失败；重试时顺带自愈。
+                    if self._cache_dirty:
+                        self._reload_cache()
+                    return replay
+                self._require_auto_speaker_locked(speaker_id)
+                return None
+            except sqlite3.Error as e:
+                raise SpeakerStoreError(f"认领状态读取失败: {e}") from e
+
+    def claim_auto_speaker(
+        self,
+        speaker_id: str,
+        name: str,
+        note: str | None,
+        vectors: list[np.ndarray],
+        durs: list[float],
+        claim_key: str,
+        quality_hint: str | None = None,
+    ) -> tuple[dict, bool]:
+        """认领自动说话人并替换模板，返回 (响应, 是否首次写入)。
+
+        speaker 元数据、旧模板删除、新模板插入和幂等结果在同一事务完成；
+        speaker_id 与 created_at 保持不变。
+        """
+        replay = self.resolve_claim(speaker_id, claim_key)
+        if replay is not None:
+            return replay, False
+        if not vectors or len(vectors) != len(durs):
+            raise SpeakerStoreError("模板向量与时长数量不符或为空")
+        if len(vectors) > self.MAX_TEMPLATES:
+            raise SpeakerStoreError(f"模板数超过上限 {self.MAX_TEMPLATES}")
+
+        validated = [self._validate_vector(v) for v in vectors]
+        try:
+            validated_durs = [float(dur) for dur in durs]
+        except (TypeError, ValueError) as e:
+            raise SpeakerStoreError("模板时长无效") from e
+        centroid = np.stack(validated).mean(axis=0)
+        norm = float(np.linalg.norm(centroid))
+        if norm > 0:
+            centroid = centroid / norm
+
+        now = self._now()
+        response: dict
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                replay = self._claim_replay_locked(speaker_id, claim_key)
+                if replay is not None:
+                    self._conn.rollback()
+                    if self._cache_dirty:
+                        self._reload_cache()
+                    return replay, False
+                self._require_auto_speaker_locked(speaker_id)
+
+                self._conn.execute(
+                    "DELETE FROM templates WHERE speaker_id=?",
+                    (speaker_id,),
+                )
+                template_ids = []
+                for vector, dur in zip(validated, validated_durs):
+                    cur = self._conn.execute(
+                        "INSERT INTO templates"
+                        "(speaker_id, vector, dur_sec, created_at) VALUES(?,?,?,?)",
+                        (speaker_id, vector.tobytes(), dur, now),
+                    )
+                    template_ids.append(int(cur.lastrowid))
+                self._conn.execute(
+                    "UPDATE speakers SET name=?, note=?, consent=1, source='manual',"
+                    " centroid=?, updated_at=? WHERE id=?",
+                    (name, note, centroid.astype(np.float32).tobytes(), now,
+                     speaker_id),
+                )
+                response = {
+                    "speaker_id": speaker_id,
+                    "name": name,
+                    "source": "manual",
+                    "templates": len(template_ids),
+                    "template_ids": template_ids,
+                    "quality_hint": quality_hint,
+                }
+                self._conn.execute(
+                    "INSERT INTO speaker_claims"
+                    "(claim_key, speaker_id, response, created_at) VALUES(?,?,?,?)",
+                    (claim_key, speaker_id,
+                     json.dumps(response, ensure_ascii=False), now),
+                )
+                self._conn.commit()
+                self._reload_cache()
+            except SpeakerStoreError:
+                self._conn.rollback()
+                raise
+            except sqlite3.Error as e:
+                self._conn.rollback()
+                raise SpeakerStoreError(f"说话人认领失败: {e}") from e
+
+        self.audit(
+            "claim",
+            speaker_id,
+            {"name": name, "templates": len(validated)},
+        )
+        return response, True
 
     def alloc_auto_name(self) -> str:
         """自动登记占位名：meta.auto_name_seq 持锁自增，序号只增不复用（与改名/删除解耦）。"""
@@ -377,12 +589,14 @@ class SpeakerStore:
     # ─── 识别（纯内存，不触库；无锁读一致性靠"重载即整体替换引用"）───
 
     def identify(self, emb: np.ndarray, threshold: float = 0.45,
-                 margin: float = 0.10) -> dict | None:
+                 margin: float = 0.10, *,
+                 include_source: bool = False) -> dict | None:
         """1:N 开集识别：top1 < threshold 或 top1-top2 < margin → None（unknown）。
 
         emb 须 L2 归一 [192]；threshold/margin 由调用方（Service）从 cfg 传入。
+        include_source 供管理端识别接口区分 manual/auto；转写联动保持原响应。
         """
-        matrix, ids, names = self._cache    # 单属性读：快照原子，无撕裂
+        matrix, ids, names, sources = self._cache  # 单属性读：快照原子，无撕裂
         if matrix.shape[0] == 0:
             return None
         scores = matrix @ np.asarray(emb, dtype=np.float32).reshape(-1)
@@ -396,7 +610,10 @@ class SpeakerStore:
             if top1 - top2 < margin:
                 return None             # 近邻打架：开集场景宁缺勿错
         idx = int(order[-1])
-        return {"speaker_id": ids[idx], "name": names[idx], "score": top1}
+        result = {"speaker_id": ids[idx], "name": names[idx], "score": top1}
+        if include_source:
+            result["source"] = sources[idx]
+        return result
 
     # ─── 启动检查 / 收尾 ───
 

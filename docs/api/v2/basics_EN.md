@@ -141,7 +141,7 @@ Returns the current serving mode and capability declaration (clients can use it 
 | Field | Description |
 |-------|-------------|
 | speaker_labels | Whether speaker diarization is enabled (offline and real-time share the same switch) |
-| speaker_identification | Whether voiceprint real-name identification is available (enrollment / identify / transcription integration) |
+| speaker_identification | Whether voiceprint real-name identification is available (enrollment / claiming / identify / transcription integration) |
 | stream.enabled | Whether the real-time endpoint is mounted; standard requires `--enable-stream`, while vllm is always true |
 | stream.backend | `vad-offline` / `vllm-native` |
 | stream.partial_results | Whether intermediate `partial` results are produced (false for vad-offline) |

@@ -79,7 +79,17 @@ class IdentifyResponse(BaseModel):
     matched: bool
     speaker_id: str | None = None
     name: str | None = None
+    source: str | None = None
     score: float | None = None
+
+
+class SpeakerClaimResponse(BaseModel):
+    speaker_id: str
+    name: str
+    source: str = "manual"
+    templates: int
+    template_ids: list[int]
+    quality_hint: str | None = None
 
 
 class SpeakerUpdateRequest(BaseModel):

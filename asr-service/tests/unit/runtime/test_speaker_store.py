@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from app.runtime.speaker_store import (
+    SpeakerClaimConflictError,
     SpeakerNotFoundError,
     SpeakerStore,
     SpeakerStoreError,
@@ -49,6 +50,47 @@ def test_init_idempotent(tmp_path):
     assert s2.get_speaker(sid)["name"] == "张三"
     assert s2.speaker_count == 1
     s2.close()
+
+
+def test_schema_version_and_claim_table(store):
+    version = store._conn.execute(
+        "SELECT value FROM meta WHERE key='schema_version'"
+    ).fetchone()["value"]
+    table = store._conn.execute(
+        "SELECT name FROM sqlite_master"
+        " WHERE type='table' AND name='speaker_claims'"
+    ).fetchone()
+    assert version == str(SpeakerStore.SCHEMA_VERSION)
+    assert table["name"] == "speaker_claims"
+
+
+def test_schema_v1_database_is_upgraded(tmp_path):
+    path = str(tmp_path / "legacy.db")
+    legacy = SpeakerStore(path, model_tag=TAG)
+    sid = legacy.enroll_speaker(
+        "说话人_01", None, [unit(0)], [12.0], True, source="auto"
+    )
+    legacy._conn.execute("DROP TABLE speaker_claims")
+    legacy._conn.execute(
+        "UPDATE meta SET value='1' WHERE key='schema_version'"
+    )
+    legacy._conn.commit()
+    legacy.close()
+
+    upgraded = SpeakerStore(path, model_tag=TAG)
+    try:
+        version = upgraded._conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()["value"]
+        table = upgraded._conn.execute(
+            "SELECT name FROM sqlite_master"
+            " WHERE type='table' AND name='speaker_claims'"
+        ).fetchone()
+        assert version == str(SpeakerStore.SCHEMA_VERSION)
+        assert table["name"] == "speaker_claims"
+        assert upgraded.get_speaker(sid)["source"] == "auto"
+    finally:
+        upgraded.close()
 
 
 def test_check_model_tag(store):
@@ -114,6 +156,160 @@ def test_auto_enroll_source_recorded(store):
     assert store.list_speakers()[0]["source"] == "auto"
 
 
+# ─── 自动说话人认领 ───
+
+def test_claim_replaces_templates_and_preserves_speaker_id(store):
+    sid = store.enroll_speaker(
+        "说话人_01",
+        None,
+        [unit(0)],
+        [12.0],
+        consent=True,
+        source="auto",
+    )
+    old_template_id = store.get_speaker(sid)["templates"][0]["id"]
+
+    result, created = store.claim_auto_speaker(
+        sid,
+        "张三",
+        "产品部",
+        [unit(1), unit(2)],
+        [5.0, 6.0],
+        "profile-1",
+    )
+
+    assert created is True
+    assert result["speaker_id"] == sid
+    assert result["template_ids"] != [old_template_id]
+    info = store.get_speaker(sid)
+    assert info["name"] == "张三"
+    assert info["note"] == "产品部"
+    assert info["source"] == "manual"
+    assert [item["id"] for item in info["templates"]] == result["template_ids"]
+    centroid = mix(unit(1), unit(2), 1.0, 1.0)
+    assert store.identify(centroid)["speaker_id"] == sid
+    assert store.identify(centroid)["name"] == "张三"
+
+
+def test_claim_is_idempotent_for_same_key_and_speaker(store):
+    sid = store.enroll_speaker(
+        "说话人_01",
+        None,
+        [unit(0)],
+        [12.0],
+        consent=True,
+        source="auto",
+    )
+    first, created = store.claim_auto_speaker(
+        sid, "张三", None, [unit(1)], [5.0], "profile-1"
+    )
+    version_after_claim = store.cache_version
+    replay, replay_created = store.claim_auto_speaker(
+        sid, "不应覆盖", "新备注", [unit(2)], [7.0], "profile-1"
+    )
+
+    assert created is True and replay_created is False
+    assert replay == first
+    assert store.cache_version == version_after_claim
+    info = store.get_speaker(sid)
+    assert info["name"] == "张三" and info["note"] is None
+    assert [item["id"] for item in info["templates"]] == first["template_ids"]
+    claim_audits = store._conn.execute(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action='claim'"
+    ).fetchone()["n"]
+    assert claim_audits == 1
+
+
+def test_claim_replay_repairs_cache_only_when_dirty(store):
+    sid = store.enroll_speaker(
+        "说话人_01", None, [unit(0)], [12.0], True, source="auto"
+    )
+    first, _ = store.claim_auto_speaker(
+        sid, "张三", None, [unit(1)], [5.0], "profile-1"
+    )
+    store._cache = (
+        np.zeros((0, DIM), dtype=np.float32),
+        [],
+        [],
+        [],
+    )
+    store._cache_dirty = True
+    version_before_repair = store.cache_version
+
+    replay, created = store.claim_auto_speaker(
+        sid, "不应覆盖", None, [unit(2)], [6.0], "profile-1"
+    )
+
+    assert created is False and replay == first
+    assert store.cache_version == version_before_repair + 1
+    assert store._cache_dirty is False
+    assert store.identify(unit(1))["speaker_id"] == sid
+
+
+def test_claim_rejects_manual_speaker_without_changes(store):
+    sid = store.enroll_speaker(
+        "张三", "原备注", [unit(0)], [5.0], consent=True
+    )
+    before = store.get_speaker(sid)
+
+    with pytest.raises(SpeakerClaimConflictError) as exc:
+        store.claim_auto_speaker(
+            sid, "李四", "新备注", [unit(1)], [6.0], "profile-1"
+        )
+
+    assert exc.value.code == "speaker_not_claimable"
+    assert exc.value.speaker_id == sid
+    assert exc.value.speaker_name == "张三"
+    assert store.get_speaker(sid) == before
+
+
+def test_claim_key_cannot_be_reused_for_another_speaker(store):
+    sid_a = store.enroll_speaker(
+        "说话人_01", None, [unit(0)], [12.0], True, source="auto"
+    )
+    sid_b = store.enroll_speaker(
+        "说话人_02", None, [unit(1)], [12.0], True, source="auto"
+    )
+    store.claim_auto_speaker(
+        sid_a, "张三", None, [unit(0)], [5.0], "profile-1"
+    )
+
+    with pytest.raises(SpeakerClaimConflictError) as exc:
+        store.claim_auto_speaker(
+            sid_b, "李四", None, [unit(1)], [5.0], "profile-1"
+        )
+
+    assert exc.value.code == "claim_key_conflict"
+    assert exc.value.speaker_id == sid_a
+    assert store.get_speaker(sid_b)["source"] == "auto"
+
+
+def test_claim_rolls_back_all_changes_when_idempotency_write_fails(store):
+    sid = store.enroll_speaker(
+        "说话人_01",
+        None,
+        [unit(0)],
+        [12.0],
+        consent=True,
+        source="auto",
+    )
+    before = store.get_speaker(sid)
+    store._conn.execute(
+        "CREATE TRIGGER fail_claim BEFORE INSERT ON speaker_claims"
+        " BEGIN SELECT RAISE(ABORT, 'claim failed'); END"
+    )
+    store._conn.commit()
+
+    with pytest.raises(SpeakerStoreError, match="认领失败"):
+        store.claim_auto_speaker(
+            sid, "张三", None, [unit(1)], [5.0], "profile-1"
+        )
+
+    assert store.get_speaker(sid) == before
+    assert store.identify(unit(0))["speaker_id"] == sid
+    assert store.identify(unit(1)) is None
+
+
 # ─── 占位名序号 ───
 
 def test_alloc_auto_name_sequence_no_reuse(store):
@@ -136,6 +332,7 @@ def test_identify_hit_and_threshold(store):
     hit = store.identify(unit(0), threshold=0.45, margin=0.10)
     assert hit["speaker_id"] == sid and hit["name"] == "张三"
     assert hit["score"] == pytest.approx(1.0, abs=1e-5)
+    assert store.identify(unit(0), include_source=True)["source"] == "manual"
     # 低于阈值 → unknown
     assert store.identify(unit(1), threshold=0.45, margin=0.10) is None
 
@@ -259,6 +456,20 @@ def test_delete_speaker_cascades_templates(store):
         "SELECT COUNT(*) AS n FROM templates WHERE speaker_id=?", (sid,)).fetchone()["n"]
     assert n == 0                              # ON DELETE CASCADE 生效
     assert store.speaker_count == 0
+
+
+def test_delete_speaker_cascades_claim_record(store):
+    sid = store.enroll_speaker(
+        "说话人_01", None, [unit(0)], [12.0], True, source="auto"
+    )
+    store.claim_auto_speaker(
+        sid, "张三", None, [unit(0)], [5.0], "profile-1"
+    )
+    store.delete_speaker(sid)
+    count = store._conn.execute(
+        "SELECT COUNT(*) AS n FROM speaker_claims"
+    ).fetchone()["n"]
+    assert count == 0
 
 
 def test_delete_speaker_missing(store):

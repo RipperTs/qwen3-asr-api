@@ -1,8 +1,9 @@
 """app/api/speaker_routes.py 测试（mock Service，TestClient，不触模型/库）。
 
-覆盖：八条路由正反路径、401 鉴权、503（未启用 / model_tag 失配语义分裂）、
+覆盖：九条路由正反路径、401 鉴权、503（未启用 / model_tag 失配语义分裂）、
 consent 缺失 400、ValueError→400 / SpeakerNotFoundError→404 /
-SpeakerStoreError→500 映射、multipart 多文件、剩 0 模板提示。
+SpeakerClaimConflictError→409 / SpeakerStoreError→500 映射、multipart 多文件、
+认领幂等参数与剩 0 模板提示。
 """
 from unittest.mock import MagicMock
 
@@ -12,7 +13,11 @@ from fastapi.testclient import TestClient
 
 import app.config as cfg
 from app.api.speaker_routes import build_speakers_router, init_speaker_routes
-from app.runtime.speaker_store import SpeakerNotFoundError, SpeakerStoreError
+from app.runtime.speaker_store import (
+    SpeakerClaimConflictError,
+    SpeakerNotFoundError,
+    SpeakerStoreError,
+)
 
 AUTH = {"Authorization": "Bearer test-key"}
 
@@ -41,8 +46,21 @@ def make_service():
     service.store.get_speaker.return_value = dict(SPEAKER_DETAIL)
     service.enroll.return_value = {"speaker_id": "a" * 32, "name": "张三", "templates": 1,
                                    "quality_hint": "建议提供 ≥3 个样本"}
-    service.identify_file.return_value = {"matched": True, "speaker_id": "a" * 32,
-                                          "name": "张三", "score": 0.62}
+    service.identify_file.return_value = {
+        "matched": True,
+        "speaker_id": "a" * 32,
+        "name": "张三",
+        "source": "manual",
+        "score": 0.62,
+    }
+    service.claim.return_value = {
+        "speaker_id": "a" * 32,
+        "name": "张三",
+        "source": "manual",
+        "templates": 2,
+        "template_ids": [11, 12],
+        "quality_hint": "建议提供 ≥3 个样本",
+    }
     service.add_template.return_value = {"speaker_id": "a" * 32, "templates": 2}
     return service
 
@@ -81,6 +99,16 @@ def test_tag_mismatch_splits_endpoints():
     assert r.status_code == 503 and r.json()["detail"] == "model_tag_mismatch"
     assert c.post("/v2/speakers/identify", headers=AUTH,
                   files={"file": ("a.wav", b"x", "audio/wav")}).status_code == 503
+    assert c.post(
+        f"/v2/speakers/{'a' * 32}/claim",
+        headers=AUTH,
+        files=_files(),
+        data={
+            "name": "x",
+            "consent": "true",
+            "claim_key": "profile-1",
+        },
+    ).status_code == 503
     assert c.get("/v2/speakers", headers=AUTH).status_code == 200
     assert c.patch(f"/v2/speakers/{'a'*32}", headers=AUTH,
                    json={"name": "y"}).status_code == 200
@@ -131,6 +159,71 @@ def test_enroll_store_error_maps_500():
     r = c.post("/v2/speakers", headers=AUTH, files=_files(),
                data={"name": "x", "consent": "true"})
     assert r.status_code == 500
+
+
+# ─── claim ───
+
+def test_claim_ok_multifile():
+    service = make_service()
+    c = make_client(service)
+    r = c.post(
+        f"/v2/speakers/{'a' * 32}/claim",
+        headers=AUTH,
+        files=_files(2),
+        data={
+            "name": "张三",
+            "consent": "true",
+            "claim_key": "profile-1",
+            "note": "产品部",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["template_ids"] == [11, 12]
+    args = service.claim.call_args.args
+    assert args[0] == "a" * 32
+    assert args[1] == "张三" and args[2] == "产品部"
+    assert len(args[3]) == 2 and args[4:] == (True, "profile-1")
+
+
+def test_claim_missing_consent_400():
+    c = make_client(make_service())
+    r = c.post(
+        f"/v2/speakers/{'a' * 32}/claim",
+        headers=AUTH,
+        files=_files(),
+        data={"name": "张三", "claim_key": "profile-1"},
+    )
+    assert r.status_code == 400 and "consent" in r.json()["detail"]
+
+
+def test_claim_manual_speaker_returns_structured_409():
+    service = make_service()
+    service.claim.side_effect = SpeakerClaimConflictError(
+        "speaker_not_claimable",
+        "仅自动登记的说话人可以被认领",
+        speaker_id="b" * 32,
+        speaker_name="李四",
+        source="manual",
+    )
+    c = make_client(service)
+    r = c.post(
+        f"/v2/speakers/{'b' * 32}/claim",
+        headers=AUTH,
+        files=_files(),
+        data={
+            "name": "张三",
+            "consent": "true",
+            "claim_key": "profile-1",
+        },
+    )
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["code"] == "speaker_not_claimable"
+    assert detail["conflict"] == {
+        "speaker_id": "b" * 32,
+        "speaker_name": "李四",
+        "source": "manual",
+    }
 
 
 # ─── 列表 / 详情 / 更新 / 删除 ───
@@ -224,3 +317,4 @@ def test_identify_matched():
     body = c.post("/v2/speakers/identify", headers=AUTH,
                   files={"file": ("a.wav", b"x", "audio/wav")}).json()
     assert body["matched"] is True and body["name"] == "张三"
+    assert body["source"] == "manual"
