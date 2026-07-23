@@ -109,7 +109,6 @@ class StreamSession:
         self._speaker = speaker                  # None = 说话人分离关闭
         self._spk_cluster = None                 # configure() 时重建（会话域）
         self._speaker_service = speaker_service  # None = 声纹库未启用
-        self._identify = False                   # start 消息 identify_speakers 开关
         self._spk_name_cache = {}                # label -> {"name", "count", "ver"}（会话级簇缓存）
         self._noise_filter = noise_filter        # 段级远场/环境音门控开关（opt-in）
         self._energy_floor_dbfs = energy_floor_dbfs
@@ -118,15 +117,10 @@ class StreamSession:
         self._priority_gate = priority_gate
 
         # 会话级可覆盖参数（默认=服务端 cfg；configure() 经 _apply_session_override 覆盖）
-        self._spk_threshold = cfg.SPEAKER_THRESHOLD
-        self._spk_min_seg_ms = cfg.SPEAKER_MIN_SEG_MS
-        self._spk_max = cfg.SPEAKER_MAX
-        self._spk_id_threshold = cfg.SPEAKER_ID_THRESHOLD
-        self._spk_id_margin = cfg.SPEAKER_ID_MARGIN
+        self._reset_speaker_options()
         self._max_end_silence_ms = cfg.VAD_MAX_SILENCE   # 始终显式传 VAD，避免跨会话继承
         self._with_punc = True                   # 降级开关：仅能关（不能开启未加载模型）
         self._with_words = True
-        self._with_diarize = True
         self._warnings = []                      # 因功能未启用被忽略的参数（软提示）
 
         self.audio_fs = _TARGET_SR
@@ -137,6 +131,16 @@ class StreamSession:
         self.seg_start_ms = None
         self.buffer = None
         self._frame_count = 0
+
+    def _reset_speaker_options(self):
+        """恢复说话人会话参数，避免兼容 WS 多轮任务互相污染。"""
+        self._spk_threshold = cfg.SPEAKER_THRESHOLD
+        self._spk_min_seg_ms = cfg.SPEAKER_MIN_SEG_MS
+        self._spk_max = cfg.SPEAKER_MAX
+        self._spk_id_threshold = cfg.SPEAKER_ID_THRESHOLD
+        self._spk_id_margin = cfg.SPEAKER_ID_MARGIN
+        self._with_diarize = True
+        self._identify = False
 
     def configure(self, cfg_msg: dict):
         cfg_msg = cfg_msg or {}
@@ -157,6 +161,7 @@ class StreamSession:
         self.seg_start_ms = None
         self.buffer = AudioBuffer(sr=_TARGET_SR)
         self._frame_count = 0
+        self._reset_speaker_options()
         self._apply_session_override(cfg_msg)
         self._apply_noise_override(cfg_msg)
         if self._speaker is not None and self._with_diarize:
@@ -167,7 +172,6 @@ class StreamSession:
             )
         else:
             self._spk_cluster = None
-        self._identify = bool(cfg_msg.get("identify_speakers", False))
         self._spk_name_cache = {}
         self._noise_tracker = NoiseFloorTracker() if self._noise_filter else None
         self._warnings = self._collect_ignored_params(cfg_msg)
@@ -227,6 +231,8 @@ class StreamSession:
         self._with_punc = parse_bool(cfg_msg.get("with_punc"), self._with_punc, "with_punc")
         self._with_words = parse_bool(cfg_msg.get("with_words"), self._with_words, "with_words")
         self._with_diarize = parse_bool(cfg_msg.get("diarize"), self._with_diarize, "diarize")
+        self._identify = parse_bool(
+            cfg_msg.get("identify_speakers"), self._identify, "identify_speakers")
 
     def _collect_ignored_params(self, cfg_msg: dict) -> list[str]:
         """合法但因服务端未启用对应功能而无法生效的参数（软提示，不报错）。"""

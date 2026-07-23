@@ -4,7 +4,7 @@
 
 Drop-in shim for clients already built against the **Alibaba Cloud DashScope (Paraformer)** speech ecosystem. DashScope Paraformer **recorded-file recognition** (async): submit → poll → fetch second-hop result. Client `dashscope.base_http_api_url = "http://<host>:8765/compat/dashscope/api/v1"`.
 
-> Offline endpoints need `--enable-dashscope-api` at startup; realtime additionally needs `--enable-stream`. Authentication and client pointing: see the [Compatibility APIs Overview](../compat_EN.md#2-authentication).
+> Offline endpoints need `--enable-dashscope-api` at startup; realtime additionally needs `--enable-stream` in standard mode, while vllm mounts it with the compat switch automatically. Authentication and client pointing: see the [Compatibility APIs Overview](../compat_EN.md#2-authentication).
 
 > ⚠️ The DashScope endpoint only accepts `file_urls` (a list of URLs downloaded server-side). For **local file upload**, use the OpenAI endpoint [`/audio/transcriptions`](openai_EN.md#transcription) (multipart) or native [`POST /v2/asr`](../v2/transcription_EN.md).
 
@@ -88,14 +88,16 @@ WS /inference
 
 Paraformer realtime (standard mode needs `--enable-stream`; under vLLM mode `--serve-mode vllm` it auto-mounts with `--enable-dashscope-api`, no `--enable-stream` needed). ws base = `ws://<host>:8765/compat/dashscope/api-ws/v1`. `header/payload` envelope:
 
-1. Client → `run-task`: `{"header":{"action":"run-task","task_id":"<uuid>","streaming":"duplex"},"payload":{"parameters":{"format":"pcm","sample_rate":16000,"language_hints":["zh"]}}}`
+1. Client → `run-task`: `{"header":{"action":"run-task","task_id":"<uuid>","streaming":"duplex"},"payload":{"parameters":{"format":"pcm","sample_rate":16000,"language_hints":["zh"],"diarization_enabled":true}}}`
 2. Server → `task-started`
 3. Client → binary PCM frames (~100ms each)
-4. Server → per sentence `result-generated`: `payload.output.sentence` with `begin_time`/`end_time`(ms)/`text`/`sentence_end:true`/`words[]`
+4. Server → per sentence `result-generated`: `payload.output.sentence` with `begin_time`/`end_time`(ms)/`text`/`sentence_end:true`/`words[]`; when diarization is enabled and the segment is decidable, it also carries integer `speaker_id` (A→0, B→1, ...)
 5. Client → `finish-task` → Server → `task-finished`
 6. The same connection can issue another `run-task` (connection reuse)
 
-> **Capabilities & limits**: depends on the serving mode — **standard** (VAD-offline) emits only whole sentences `result-generated` (`sentence_end:true`), no intermediate results (`sentence_end:false`); **vLLM** (`--serve-mode vllm`, native streaming) streams intermediate `result-generated` within a sentence (`sentence_end:false`, cumulative text, `begin_time`/`end_time`=null, no `words`), then a final `sentence_end:true`. DashScope's intermediate-result semantics are inherently cumulative and align naturally with vLLM partials — forwarded cleanly (not best-effort).
+> `run-task.payload.parameters.diarization_enabled` maps to the realtime diarization switch for that task; omit it to use the server default. On a reused connection each task is configured independently and does not inherit the previous task's value.
+>
+> **Capabilities & limits**: depends on the serving mode — **standard** (VAD-offline) emits only whole sentences `result-generated` (`sentence_end:true`), no intermediate results (`sentence_end:false`); **vLLM** (`--serve-mode vllm`, native streaming) streams intermediate `result-generated` within a sentence (`sentence_end:false`, cumulative text, `begin_time`/`end_time`=null, no `words` or `speaker_id`), then a final `sentence_end:true`. Both modes expose a stable `speaker_id` only on finals; it is omitted for short segments or when the speaker module is unavailable. DashScope's intermediate-result semantics are inherently cumulative and align naturally with vLLM partials — forwarded cleanly (not best-effort).
 
 ---
 

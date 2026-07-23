@@ -79,7 +79,8 @@ GET /v2/health
       "path": "/v2/asr/stream",
       "partial_results": false,
       "word_timestamps": true,
-      "speaker_labels": false
+      "speaker_labels": false,
+      "speaker_identification": false
     }
   }
 }
@@ -101,7 +102,7 @@ GET /v2/health
 | config_file | Name of the active config file (`null` = no config file loaded) |
 | capabilities | Capability summary, same as `GET /capabilities` |
 
-> In vllm mode (placeholder, not yet implemented), non-applicable fields are `null`.
+> In vllm mode, `asr_backend` is `vllm`, non-applicable VAD / punctuation backend fields are `null`, and the realtime endpoint is always enabled.
 
 ### Capabilities
 
@@ -124,6 +125,7 @@ Returns the current serving mode and capability declaration (clients can use it 
     "partial_results": false,
     "word_timestamps": true,
     "speaker_labels": true,
+    "speaker_identification": false,
     "save_audio": false,
     "recording_retention_hours": 72,
     "recording_download_path": null
@@ -140,11 +142,12 @@ Returns the current serving mode and capability declaration (clients can use it 
 |-------|-------------|
 | speaker_labels | Whether speaker diarization is enabled (offline and real-time share the same switch) |
 | speaker_identification | Whether voiceprint real-name identification is available (enrollment / identify / transcription integration) |
-| stream.enabled | Whether the real-time endpoint is mounted (requires `--enable-stream`) |
-| stream.backend | `vad-offline` / `vllm-native` (not yet implemented) |
+| stream.enabled | Whether the real-time endpoint is mounted; standard requires `--enable-stream`, while vllm is always true |
+| stream.backend | `vad-offline` / `vllm-native` |
 | stream.partial_results | Whether intermediate `partial` results are produced (false for vad-offline) |
 | stream.word_timestamps | Whether `final` carries word-level timestamps (follows the alignment switch) |
 | stream.speaker_labels | Whether real-time `final` carries speaker labels |
+| stream.speaker_identification | Whether real-time `final` may carry `speaker_name` when a voiceprint matches |
 | stream.save_audio | Whether real-time input audio is saved as WAV (default false) |
 | stream.recording_retention_hours | Real-time recording retention in hours, default 72; 0 disables auto cleanup |
 | stream.recording_download_path | Download/delete path template when saving is enabled; `null` when disabled |

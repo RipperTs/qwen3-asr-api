@@ -517,6 +517,8 @@ def _assemble_standard(app: FastAPI, args) -> None:
             "partial_results": False,
             "word_timestamps": enable_align if stream_enabled else False,
             "speaker_labels": speaker_enabled if stream_enabled else False,
+            "speaker_identification": (
+                speaker_db_enabled if stream_enabled else False),
             "save_audio": bool(stream_enabled and stream_recording_manager.enabled),
             "recording_retention_hours": cfg.STREAM_RECORDING_RETENTION_HOURS,
             "recording_download_path": (
@@ -661,9 +663,8 @@ def _assemble_standard(app: FastAPI, args) -> None:
 
 
 def _assemble_vllm(app: FastAPI, args) -> None:
-    """vllm 模式（路线 A）：vLLM 原生流式引擎 + 统一实时端点 WS /v2/asr/stream + 共性接口。
+    """vllm 模式：原生流式引擎 + 离线任务 + 兼容接口。
 
-    仅提供流式转写；不挂离线/transformers/OpenVINO/TaskManager/兼容桥（D5）。
     断句用能量端点器（无 funasr）。要求 CUDA 设备；进程内同步 vLLM，须 uvicorn workers=1。
     """
     device_info = detect_device()
@@ -762,6 +763,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         energy_floor_dbfs=cfg.VLLM_ENERGY_FLOOR_DBFS,
         end_silence_ms=cfg.VLLM_END_SILENCE_MS,
         priority_gate=realtime_priority_gate,
+        speaker=speaker_engine,
+        speaker_service=linked_speaker_service,
     )
     stream_recording_manager = _init_stream_recording_manager()
     init_ws_stream(stream_backend)
@@ -814,15 +817,17 @@ def _assemble_vllm(app: FastAPI, args) -> None:
     capabilities = {
         "mode": "vllm",
         "offline_api": True,
-        "speaker_labels": speaker_enabled,             # Phase 2：离线说话人分离
-        "speaker_identification": speaker_db_enabled,  # Phase 2：声纹识别（需声纹库）
+        "speaker_labels": speaker_enabled,
+        "speaker_identification": speaker_db_enabled,
         "stream": {
             "enabled": True,
             "backend": "vllm-native",
             "path": "/v2/asr/stream",
             "partial_results": True,
             "word_timestamps": False,
-            "speaker_labels": False,                   # 流式说话人仍无（仅离线，见能力对照）
+            "speaker_labels": stream_backend.capabilities["speaker_labels"],
+            "speaker_identification": (
+                stream_backend.capabilities["speaker_identification"]),
             "save_audio": stream_recording_manager.enabled,
             "recording_retention_hours": cfg.STREAM_RECORDING_RETENTION_HOURS,
             "recording_download_path": (
@@ -834,6 +839,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         "defaults": {
             "max_segment": cfg.MAX_SEGMENT_DURATION,
             "segment_gap_ms": cfg.VLLM_SEGMENT_GAP_MS,
+            "speaker_threshold": cfg.SPEAKER_THRESHOLD,
+            "speaker_min_seg_ms": cfg.SPEAKER_MIN_SEG_MS,
             "speaker_max": cfg.SPEAKER_MAX,
             "speaker_id_threshold": cfg.SPEAKER_ID_THRESHOLD,
             "speaker_id_margin": cfg.SPEAKER_ID_MARGIN,
@@ -884,8 +891,8 @@ def _assemble_vllm(app: FastAPI, args) -> None:
                     f"自动登记={'开' if cfg.SPEAKER_AUTO_ENROLL else '关'}）")
 
     # 兼容接口（/compat/*，Phase 3）：离线复用 vLLM 任务层，实时复用 vLLM 流式后端。
-    # 与 standard 唯一差异：vLLM 流式恒开，故实时兼容随离线开关挂载（无需 --enable-stream）；
-    # 实时为 R1 finals-only（ws_bridge 跳过 partial）。compat 代码依赖中性，惰性导入。
+    # 与 standard 唯一启动差异：vLLM 流式恒开，实时兼容随离线开关挂载
+    # （无需 --enable-stream）。compat 代码依赖中性，惰性导入。
     enable_openai = getattr(args, "enable_openai_api", False)
     enable_dashscope = getattr(args, "enable_dashscope_api", False)
     if enable_openai or enable_dashscope:
@@ -900,14 +907,15 @@ def _assemble_vllm(app: FastAPI, args) -> None:
         from app.api.compat.openai_ws_routes import build_openai_ws_router
         app.include_router(build_openai_router())
         app.include_router(build_openai_ws_router())
-        logger.info("OpenAI 兼容接口已启用：/compat/openai/v1/*（含实时 WS /realtime，整句下发）")
+        logger.info("OpenAI 兼容接口已启用：/compat/openai/v1/*"
+                    "（含实时 WS /realtime，partial→final）")
     if enable_dashscope:
         from app.api.compat.dashscope_routes import build_dashscope_router
         from app.api.compat.dashscope_ws_routes import build_dashscope_ws_router
         app.include_router(build_dashscope_router())
         app.include_router(build_dashscope_ws_router())
         logger.info("DashScope 兼容接口已启用：/compat/dashscope/api/v1/*"
-                    "（含实时 WS /api-ws/v1/inference，整句下发）")
+                    "（含实时 WS /api-ws/v1/inference，partial→final）")
 
     # 条件挂载 Web UI（演示页已内置 partial→final 实时渲染）
     if getattr(args, "web", False):

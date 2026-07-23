@@ -26,6 +26,8 @@ def _map_run_task(obj: dict) -> dict:
     cfg_msg = {}
     if params.get("sample_rate") is not None:
         cfg_msg["audio_fs"] = params["sample_rate"]
+    if params.get("diarization_enabled") is not None:
+        cfg_msg["diarize"] = params["diarization_enabled"]
     hints = params.get("language_hints")
     engine_lang = to_engine_language(hints[0] if hints else None)
     if engine_lang is not None:

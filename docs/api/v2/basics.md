@@ -79,7 +79,8 @@ GET /v2/health
       "path": "/v2/asr/stream",
       "partial_results": false,
       "word_timestamps": true,
-      "speaker_labels": false
+      "speaker_labels": false,
+      "speaker_identification": false
     }
   }
 }
@@ -101,7 +102,7 @@ GET /v2/health
 | config_file | 本次生效的配置文件名（`null` = 未加载配置文件） |
 | capabilities | 服务能力摘要，与 `GET /capabilities` 一致 |
 
-> vllm 模式（占位，暂未实现）下不适用的字段为 `null`。
+> vllm 模式下 `asr_backend` 为 `vllm`，不适用的 VAD / 标点后端字段为 `null`；实时端点恒为启用。
 
 ### 能力查询
 
@@ -124,6 +125,7 @@ GET /v2/capabilities
     "partial_results": false,
     "word_timestamps": true,
     "speaker_labels": true,
+    "speaker_identification": false,
     "save_audio": false,
     "recording_retention_hours": 72,
     "recording_download_path": null
@@ -140,11 +142,12 @@ GET /v2/capabilities
 |------|------|
 | speaker_labels | 说话人分离是否启用（离线 + 实时同一开关） |
 | speaker_identification | 声纹库真名识别是否可用（登记 / identify / 转写联动） |
-| stream.enabled | 实时端点是否已挂载（需 `--enable-stream`） |
-| stream.backend | `vad-offline` / `vllm-native`（暂未实现） |
+| stream.enabled | 实时端点是否已挂载；standard 需 `--enable-stream`，vllm 恒为 true |
+| stream.backend | `vad-offline` / `vllm-native` |
 | stream.partial_results | 是否产生中间结果 `partial`（vad-offline 后端为 false） |
 | stream.word_timestamps | `final` 是否带单词级时间戳（随对齐开关） |
 | stream.speaker_labels | 实时 `final` 是否带说话人标签 |
+| stream.speaker_identification | 实时 `final` 是否可在声纹命中时带 `speaker_name` |
 | stream.save_audio | 是否保存实时输入音频为 WAV（默认 false） |
 | stream.recording_retention_hours | 实时录音保留小时数，默认 72；0 表示不自动清理 |
 | stream.recording_download_path | 开启保存时返回下载 / 删除路径模板；未开启时为 `null` |

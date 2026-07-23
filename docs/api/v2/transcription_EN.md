@@ -69,7 +69,7 @@ A successful submission returns only the `task_id`; **the recognition result is 
 WS /v2/asr/stream
 ```
 
-**Prerequisites**: `standard` mode + real-time enabled (`--enable-stream` or config `enable_stream: true`). The endpoint does not exist otherwise; probe [`GET /v2/capabilities`](basics_EN.md#capabilities) and check `stream.enabled` first.
+**Prerequisites**: `standard` mode requires real-time to be enabled (`--enable-stream` or config `enable_stream: true`); in `vllm` mode the realtime endpoint is always mounted and needs no such switch. Probe [`GET /v2/capabilities`](basics_EN.md#capabilities) first and check `stream.enabled`, `stream.backend`, and the speaker capabilities.
 
 > Browser test page: start with `--web` and open `/web-ui/stream` (microphone capture / simulated streaming from an audio file).
 
@@ -88,6 +88,7 @@ Client                                  Server
   │ ◀─── {"type":"session.created",...} ─ │   protocol/backend/capabilities announced on connect
   │ ──── {"type":"start",...} ──────────▶ │   session configuration
   │ ──── binary audio frames × N ───────▶ │   PCM16 little-endian, mono
+  │ ◀─── {"type":"partial",...} (opt.) ── │   only when partial_results=true
   │ ◀─── {"type":"final",...} (per seg) ─ │   sentence-level results after VAD segmentation
   │ ──── {"type":"stop"} ───────────────▶ │   end of stream
   │ ◀─── {"type":"final",...} (flush) ─── │
@@ -110,22 +111,24 @@ Client                                  Server
 | wav_name | "stream" | Session name (for display) |
 | recording_id | null | Optional. To resume recording after a disconnect, pass the `recording_id` previously returned by the server; if the original WAV still exists, new PCM is appended; if it was deleted or expired, the server creates a new WAV with this ID |
 | identify_speakers | false | Run voiceprint identification on speaker labels (requires `session.created.capabilities.speaker_identification=true`) |
-| noise_filter | server default | Override far-field segment gating for this session (defaults to the server config; requires `capabilities.noise_filter_tunable=true`) |
-| energy_floor_dbfs | server default | Override the absolute energy gate (dBFS) for this session, range `[-90, 0]`; out-of-range returns `invalid_config` |
-| snr_min_db | server default | Override the adaptive SNR gate (dB) for this session, range `[0, 40]`; `0` disables this gate |
+| noise_filter | server default | Override far-field segment gating for this session (requires `capabilities.noise_filter_tunable=true`; currently standard only) |
+| energy_floor_dbfs | server default | Override the absolute energy gate (dBFS), range `[-90, 0]` (currently standard only) |
+| snr_min_db | server default | Override the adaptive SNR gate (dB), range `[0, 40]`; `0` disables it (currently standard only) |
 | speaker_threshold | server default | Online clustering cosine threshold, range `[0.2, 0.9]` (requires `capabilities.speaker_labels=true`) |
 | speaker_min_seg_ms | server default | Short-segment gate (ms), range `[0, 10000]` |
 | speaker_max | server default | Max speakers, range `[1, 50]` |
 | speaker_id_threshold | server default | Voiceprint identification threshold, range `[0, 1]` (requires `capabilities.speaker_identification=true`) |
 | speaker_id_margin | server default | Voiceprint top1-top2 margin, range `[0, 1]` |
-| max_end_silence_ms | server default | Endpoint trailing silence (ms), range `[200, 2000]`: smaller = faster output but choppier; larger = won't interrupt but slower |
-| max_segment_sec | server default | Long-sentence fallback split (seconds), range `[1, 60]` |
-| with_punc / with_words / diarize | server default | Downgrade toggles: disable punctuation / word timestamps / diarization (off only; can't enable a model that isn't loaded) |
+| max_end_silence_ms | server default | standard endpoint trailing silence (ms), range `[200, 2000]`: smaller = faster output but choppier; larger = less interruption but slower |
+| max_segment_sec | server default | standard long-sentence fallback split (seconds), range `[1, 60]` |
+| diarize | server default | Disable diarization for this session (supported by standard and vllm; cannot enable a server model that was not loaded) |
+| with_punc / with_words | server default | standard output downgrade toggles; vllm punctuation is model-native and realtime has no word timestamps, so these are soft-ignored |
 
 > **Clamping & soft notices**: these overrides affect only the current session; out-of-range / wrong-type → `invalid_config` (fatal).
 > A well-formed param whose feature isn't enabled (e.g. `diarize:true` with no speaker engine loaded) does NOT error —
 > the server sends a non-fatal `error` after `start` (`code="params_ignored"`, `fatal=false`) whose `message` lists the ignored params.
 > The VAD sensitivity `vad_speech_noise_thres` is a server-global setting (FunASR constraint) and cannot be adjusted per session.
+> vllm endpoint thresholds and long-sentence cuts are server-level settings; requesting standard-only fields likewise produces an explicit `params_ignored` downgrade notice.
 
 **Audio frames (binary frames)**: PCM16 little-endian, mono, at the declared `audio_fs`. Max 2MB per frame (oversized frames are rejected without disconnecting).
 
@@ -139,8 +142,8 @@ All server-to-client messages use a uniform envelope and carry a `type`:
 |------|--------|-------------|
 | `session.created` | `protocol`("qwen3-asr-stream") / `protocol_version`("1.0") / `mode` / `backend` / `sample_rate` / `capabilities` / `limits` | Sent on connect; `capabilities` contains `partial_results` / `word_timestamps` / `languages_auto` / `speaker_labels` / `speaker_identification`, plus tunability flags `noise_filter_tunable` / `speaker_tunable` / `endpoint_tunable` / `output_toggles` (whether the corresponding overrides can be tuned in this session); `limits` contains `max_frame_bytes` / `max_backlog_bytes` — clients pushing faster than real time should pace themselves accordingly (use `final.end` as processing-progress feedback and keep the unprocessed backlog below the limit) |
 | `recording.created` | `recording_id` / `wav_name` / `resumed` | Sent only when `stream_save_audio` is enabled, after `start` is accepted; use `recording_id` to download or delete the saved WAV recording; `resumed=true` means this session is appending to an existing WAV, and `resumed=false` means a new recording was created |
-| `partial` | `seg_id` / `text` | Intermediate result (only for backends with `partial_results=true`; vad-offline does not produce them) |
-| `final` | `seg_id` / `text` / `start` / `end` / `words` / `speaker` / `speaker_name` | Finalized sentence-level result; `start`/`end` in milliseconds; `words` only when `word_timestamps=true`; `speaker` (anonymous label A/B/C…) only when `speaker_labels=true` and this segment is decidable; `speaker_name` only when `identify_speakers=true` and a voiceprint matches (speaker label / real-name semantics in [Speaker Management](speakers_EN.md#speaker-diarization--voiceprint-identification)) |
+| `partial` | `seg_id` / `text` | Intermediate result (only for backends with `partial_results=true`; vad-offline does not produce them); speaker labels are not stable yet and are therefore omitted |
+| `final` | `seg_id` / `text` / `start` / `end` / `words` / `speaker` / `speaker_name` | Finalized sentence-level result; `start`/`end` in milliseconds; `words` only when `word_timestamps=true`; `speaker` (anonymous label A/B/C…) only when `speaker_labels=true` and the segment meets the short-segment gate and is decidable; `speaker_name` only when `identify_speakers=true` and a voiceprint matches. Speaker data is attached only to the current final and never revises historical events (see [Speaker Management](speakers_EN.md#speaker-diarization--voiceprint-identification)) |
 | `error` | `code` / `message` / `seg_id` / `fatal` | The session terminates when `fatal=true` |
 | `session.closed` | `reason` | Session ended |
 
