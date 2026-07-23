@@ -187,7 +187,8 @@ class SpeakerService:
 
     def map_and_enroll_clusters(self, clusters: list[dict], *,
                                 id_threshold: float | None = None,
-                                id_margin: float | None = None) -> list[dict]:
+                                id_margin: float | None = None,
+                                cancelled=None) -> list[dict]:
         """离线联动入口（识别 + 自动登记）。
 
         clusters = [{"label","centroid","dur_sec"}]（S3 衔接面）。未命中且开启
@@ -195,14 +196,19 @@ class SpeakerService:
         （source='auto'；开启自动登记 = 部署方声明已获数据主体同意，consent 同责）。
         已命中的说话人不自动追加模板（防投毒）。登记失败退回匿名，不影响转写。
         id_threshold/id_margin 缺省=服务端 cfg（支持按请求覆盖）。
+        cancelled 触发后停止处理剩余簇，返回已完成的映射。
         """
         thr = cfg.SPEAKER_ID_THRESHOLD if id_threshold is None else id_threshold
         mgn = cfg.SPEAKER_ID_MARGIN if id_margin is None else id_margin
         out = []
         for c in clusters:
+            if cancelled and cancelled():
+                break
             label = c.get("label", "?")
             try:
                 hit = self.store.identify(c["centroid"], threshold=thr, margin=mgn)
+                if cancelled and cancelled():
+                    break
                 self.store.audit("identify", hit["speaker_id"] if hit else None,
                                  {"matched": hit is not None,
                                   "score": hit["score"] if hit else None,
@@ -212,7 +218,11 @@ class SpeakerService:
                     continue
                 dur = float(c.get("dur_sec") or 0.0)
                 if cfg.SPEAKER_AUTO_ENROLL and dur >= cfg.SPEAKER_AUTO_ENROLL_MIN_SEC:
+                    if cancelled and cancelled():
+                        break
                     name = self.store.alloc_auto_name()
+                    if cancelled and cancelled():
+                        break
                     sid = self.store.enroll_speaker(
                         name, None, [np.asarray(c["centroid"], dtype=np.float32)],
                         [dur], consent=True, source="auto")

@@ -185,6 +185,45 @@ def test_realtime_embedding_preempts_offline_at_batch_boundary(monkeypatch):
     assert order == ["offline", "realtime", "offline", "offline"]
 
 
+def test_offline_embedding_stops_when_cancelled_while_waiting(monkeypatch):
+    gate = RealtimePriorityGate()
+    eng, model = _engine_with_mock(priority_gate=gate)
+    cancelled = threading.Event()
+    waiting = threading.Event()
+    errors = []
+    wait_realtime_clear = gate.wait_realtime_clear
+
+    def wait_and_record(*args, **kwargs):
+        waiting.set()
+        return wait_realtime_clear(*args, **kwargs)
+
+    monkeypatch.setattr(gate, "wait_realtime_clear", wait_and_record)
+
+    def run():
+        try:
+            eng.embed_windows(
+                np.zeros(16000, dtype=np.float32),
+                [(0.0, 1.0)],
+                cancelled=cancelled.is_set,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    with gate.realtime_section():
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert waiting.wait(timeout=1)
+        assert worker.is_alive()
+
+        cancelled.set()
+        worker.join(timeout=1)
+        assert not worker.is_alive()
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], InterruptedError)
+    model.assert_not_called()
+
+
 def test_model_tag_constant():
     # V 系列衔接面：模板兼容性标识必须存在且非空
     assert SpeakerEmbeddingEngine.MODEL_TAG == "campplus_cn_common@v1"

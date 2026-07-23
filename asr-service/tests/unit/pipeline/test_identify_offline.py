@@ -4,6 +4,7 @@
 未命中保留匿名、模块关闭/分离失败字段不出现、segment 级不带 speaker_id、
 clusters 衔接面字段（label/centroid/dur_sec）。
 """
+import threading
 import types
 
 import numpy as np
@@ -23,12 +24,12 @@ def _unit(i: int) -> np.ndarray:
 class FakeSpeakerEngine:
     """t<5s 的窗 → 说话人 0，之后 → 说话人 1。"""
 
-    def embed_windows(self, wav, windows):
+    def embed_windows(self, wav, windows, *, cancelled=None):
         return np.stack([_unit(0 if st < 5.0 else 1) for st, _ in windows])
 
 
 class BoomSpeakerEngine:
-    def embed_windows(self, wav, windows):
+    def embed_windows(self, wav, windows, *, cancelled=None):
         raise RuntimeError("boom")
 
 
@@ -38,7 +39,8 @@ class FakeSpeakerService:
     def __init__(self):
         self.calls: list[list[dict]] = []
 
-    def map_and_enroll_clusters(self, clusters, *, id_threshold=None, id_margin=None):
+    def map_and_enroll_clusters(self, clusters, *, id_threshold=None, id_margin=None,
+                                cancelled=None):
         self.calls.append(clusters)
         out = []
         for c in clusters:
@@ -105,7 +107,8 @@ def test_identify_clusters_interface_fields(run_env, tmp_path):
 
 def test_identify_miss_keeps_anonymous(run_env, tmp_path):
     class AllMissService:
-        def map_and_enroll_clusters(self, clusters, *, id_threshold=None, id_margin=None):
+        def map_and_enroll_clusters(self, clusters, *, id_threshold=None, id_margin=None,
+                                    cancelled=None):
             return [{"label": c["label"], "speaker_id": None, "name": None,
                      "score": None} for c in clusters]
 
@@ -138,6 +141,30 @@ def test_identify_skipped_when_diarization_fails(run_env, tmp_path):
     result = pipe.run(str(tmp_path / "a.mp3"), "t1", identify_speakers=True)
     assert "speakers" not in result                    # 分离失败 → 降级一致
     assert service.calls == []                         # 不调用声纹服务
+
+
+def test_identify_skipped_when_cancelled_after_embedding(run_env, tmp_path):
+    cancel_event = threading.Event()
+
+    class CancellingSpeakerEngine(FakeSpeakerEngine):
+        def embed_windows(self, wav, windows, *, cancelled=None):
+            assert cancelled is not None
+            embeddings = super().embed_windows(
+                wav, windows, cancelled=cancelled)
+            cancel_event.set()
+            return embeddings
+
+    service = FakeSpeakerService()
+    pipe = _make_pipe(CancellingSpeakerEngine(), service)
+    result = pipe.run(
+        str(tmp_path / "a.mp3"),
+        "t1",
+        cancelled=cancel_event.is_set,
+        identify_speakers=True,
+    )
+
+    assert "speakers" not in result
+    assert service.calls == []
 
 
 def test_identify_with_diarize_off_warns_not_silent(run_env, tmp_path):

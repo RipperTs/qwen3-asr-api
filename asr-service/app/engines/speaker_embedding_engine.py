@@ -91,8 +91,13 @@ class SpeakerEmbeddingEngine:
         n = -(-target_len // x.shape[0])
         return torch.cat([x] * n)[:target_len]
 
+    @staticmethod
+    def _raise_if_cancelled(cancelled) -> None:
+        if cancelled is not None and cancelled():
+            raise InterruptedError("说话人处理已取消")
+
     def _embed_windows(self, wav: np.ndarray, windows: list[tuple[float, float]],
-                       *, realtime: bool) -> np.ndarray:
+                       *, realtime: bool, cancelled=None) -> np.ndarray:
         """按窗口批量提取；有优先门控时，离线在每个 batch 前为实时任务让路。
 
         wav 须为 16k 单声道 float32（实时侧 final 段、离线侧 soundfile 读出均天然满足）。
@@ -102,12 +107,14 @@ class SpeakerEmbeddingEngine:
         if not windows:
             return np.zeros((0, self.EMB_DIM), dtype=np.float32)
 
+        self._raise_if_cancelled(cancelled)
         gate = self._priority_gate
         section = gate.realtime_section() if realtime and gate is not None else nullcontext()
         with section:
             sr = self.SAMPLE_RATE
             clips = []
             for st, ed in windows:
+                self._raise_if_cancelled(cancelled)
                 clip = wav[max(int(st * sr), 0):int(ed * sr)]
                 if len(clip) == 0:
                     # 防御：窗落在音频界外（理论不应发生），以零样本占位保持与窗表对齐
@@ -117,40 +124,52 @@ class SpeakerEmbeddingEngine:
             max_len = max(max(c.shape[0] for c in clips), 400)
 
             if gate is None:
-                feats = torch.stack([
-                    self._fbank(self._circle_pad(c, max_len)) for c in clips
-                ])
+                feats_list = []
+                for clip in clips:
+                    self._raise_if_cancelled(cancelled)
+                    feats_list.append(self._fbank(self._circle_pad(clip, max_len)))
+                feats = torch.stack(feats_list)
                 outs = []
                 with self._infer_lock, torch.no_grad():
                     for i in range(0, len(feats), self._BATCH):
+                        self._raise_if_cancelled(cancelled)
                         outs.append(self._model(feats[i:i + self._BATCH]))
             else:
                 # 特征和 forward 都按 batch 推进；离线不会再跨全部窗口长期占用模型锁。
                 outs = []
                 with torch.no_grad():
                     for i in range(0, len(clips), self._BATCH):
+                        self._raise_if_cancelled(cancelled)
                         if not realtime:
-                            gate.wait_realtime_clear()
+                            if not gate.wait_realtime_clear(cancelled=cancelled):
+                                raise InterruptedError("说话人处理已取消")
                         batch = clips[i:i + self._BATCH]
                         feats = torch.stack([
                             self._fbank(self._circle_pad(c, max_len)) for c in batch
                         ])
+                        self._raise_if_cancelled(cancelled)
                         if not realtime:
-                            gate.wait_realtime_clear()
+                            if not gate.wait_realtime_clear(cancelled=cancelled):
+                                raise InterruptedError("说话人处理已取消")
                         with self._infer_lock:
+                            self._raise_if_cancelled(cancelled)
                             outs.append(self._model(feats))
+        self._raise_if_cancelled(cancelled)
         return F.normalize(torch.cat(outs), dim=1).numpy()
 
     def embed_windows(self, wav: np.ndarray,
-                      windows: list[tuple[float, float]]) -> np.ndarray:
-        """按窗口（秒）批量提取。短窗循环补齐至调用内最长。返回 L2 归一化 [N,192]。"""
-        return self._embed_windows(wav, windows, realtime=False)
+                      windows: list[tuple[float, float]], *,
+                      cancelled=None) -> np.ndarray:
+        """按窗口批量提取；取消时抛出 InterruptedError，否则返回归一化 [N,192]。"""
+        return self._embed_windows(
+            wav, windows, realtime=False, cancelled=cancelled)
 
     def _embed_segment(self, wav: np.ndarray, *, realtime: bool) -> np.ndarray:
         embs = self._embed_windows(
             wav,
             make_windows(0.0, len(wav) / self.SAMPLE_RATE),
             realtime=realtime,
+            cancelled=None,
         )
         mean = embs.mean(axis=0)
         norm = float(np.linalg.norm(mean))

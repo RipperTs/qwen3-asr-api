@@ -182,11 +182,15 @@ class ASRPipeline:
                 if progress_callback:
                     progress_callback(0.90)
                 try:
-                    diar = self._run_diarization(wav_path, vad_segments)
+                    diar = self._run_diarization(
+                        wav_path, vad_segments, cancelled=cancelled)
                     for seg in segments:
                         label = diar.label_for(seg["start"], seg["end"])
                         if label is not None:
                             seg["speaker"] = label
+                except InterruptedError:
+                    logger.info("[Pipeline] 任务已取消，停止说话人处理")
+                    diar = None
                 except Exception as e:
                     logger.warning(f"说话人分离失败，跳过: {e}")
                     diar = None
@@ -207,18 +211,23 @@ class ASRPipeline:
                 )
                 # 声纹识别 + 自动登记：speakers 升级为带 speaker_id/name 的映射表；
                 # map_and_enroll_clusters 永不抛错（失败退回匿名）
-                if identify_speakers and self.speaker_service is not None:
+                if (identify_speakers and self.speaker_service is not None
+                        and not (cancelled and cancelled())):
                     mapping = self.speaker_service.map_and_enroll_clusters(
-                        diar.clusters, id_threshold=id_threshold, id_margin=id_margin)
-                    name_of = {m["label"]: m for m in mapping}
-                    for seg in segments:
-                        m = name_of.get(seg.get("speaker"))
-                        if m and m.get("name"):
-                            seg["speaker_name"] = m["name"]
-                    speakers_result = mapping
-                    named = sum(1 for m in mapping if m.get("name"))
-                    logger.info(f"[Pipeline] 声纹识别完成: {named}/{len(mapping)} 簇有名")
-            if speaker_active and progress_callback:
+                        diar.clusters, id_threshold=id_threshold, id_margin=id_margin,
+                        cancelled=cancelled)
+                    if not (cancelled and cancelled()):
+                        name_of = {m["label"]: m for m in mapping}
+                        for seg in segments:
+                            m = name_of.get(seg.get("speaker"))
+                            if m and m.get("name"):
+                                seg["speaker_name"] = m["name"]
+                        speakers_result = mapping
+                        named = sum(1 for m in mapping if m.get("name"))
+                        logger.info(
+                            f"[Pipeline] 声纹识别完成: {named}/{len(mapping)} 簇有名")
+            if (speaker_active and progress_callback
+                    and not (cancelled and cancelled())):
                 progress_callback(0.95)
 
             # 5. 合并全文
@@ -491,7 +500,8 @@ class ASRPipeline:
             segment["split_after"] = True
         return segment
 
-    def _run_diarization(self, wav_path: str, vad_segments: list[tuple[int, int]]):
+    def _run_diarization(self, wav_path: str, vad_segments: list[tuple[int, int]],
+                         *, cancelled=None):
         """说话人分离：原始 VAD 段（合并前）滑窗 → embedding → 全局聚类。
 
         返回 DiarizationResult（label_for 投票 + clusters 衔接面，声纹库 V 系列用）。
@@ -513,8 +523,13 @@ class ASRPipeline:
             logger.info(f"[Pipeline] 说话人滑窗抽稀: 每 {k} 取 1 → {len(windows)} 窗")
 
         wav, _sr = sf.read(wav_path, dtype="float32")  # 阶段 0 已保证 16k 单声道
-        embeddings = self.speaker.embed_windows(wav, windows)
+        embeddings = self.speaker.embed_windows(
+            wav, windows, cancelled=cancelled)
+        if cancelled and cancelled():
+            raise InterruptedError("说话人处理已取消")
         labels = cluster_offline(embeddings, max_speakers=cfg.SPEAKER_MAX)
+        if cancelled and cancelled():
+            raise InterruptedError("说话人处理已取消")
         return DiarizationResult(windows, labels, embeddings)
 
     def _merge_vad_segments(
